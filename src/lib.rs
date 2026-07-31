@@ -1,5 +1,3 @@
-mod link;
-
 use std::ops::Deref;
 
 use dyn_utils::{
@@ -17,8 +15,8 @@ use hazymacros::trait_alias;
 pub mod __codegen {
     pub use dyn_utils;
     pub use facet;
-    pub use inventory;
     pub use paste;
+    pub use scattered_collect;
 }
 
 pub use dyn_utils::storage;
@@ -50,9 +48,10 @@ pub struct Plugged<T: Pluggable, S: Storage = DefaultStorage> {
     object: DynObject<T, S>,
 }
 
-// TODO: we can maybe get away without `dyn` at all!
+// TODO: we can maybe get away without `dyn_object` on trait
 // this will require enum_dispatch and listing all impls on define explicitly
 // the latter may be made amenable with plug_mod
+// note: this will still require `dyn_trait` for future dispatch
 
 // TODO: do not require Interface in scope to call by Object
 // ref: `inherent` crate
@@ -65,7 +64,7 @@ macro_rules! define {
         $crate::_h::hazymacros::purescope! { $vis $name {
             use $crate::__codegen::*;
             use facet::Shape;
-            use scattered_collect::{gather, slice::ScatteredSlice as LinkSlice};
+            use scattered_collect::{gather, slice::ScatteredSlice};
 
             #[dyn_trait]
             #[dyn_trait(dyn_object)]
@@ -75,7 +74,7 @@ macro_rules! define {
 
             #[doc(hidden)]
             pub struct Link(fn() -> &'static Shape);
-            inventory::collect!(Link);
+            #[gather] static LINKS: ScatteredSlice<LinkedShape>;
         }}
     };
 }
@@ -92,50 +91,81 @@ macro_rules! register {
 struct Test;
 
 // TODO: consider dtonlay linkme
+mod dev {
+    use std::{ops::Deref, slice};
 
-type LinkedShape = fn() -> &'static facet::Shape;
+    use konst::iter::{ConstIntoIter, IsIntoIterKind};
+    use linktime::link_section::{TypedReferenceSection, TypedSection};
+    use scattered_collect::{ScatteredReferencedSlice, gather};
 
-#[cfg(debug_assertions)]
-const fn shape<T, Link: inventory::Collect + Into<LinkedShape>>() -> facet::Shape {
-    use std::mem;
+    type LinkedShape = fn() -> &'static facet::Shape;
 
-    use facet::{Def, Field, FieldFlags, Repr, ShapeRef, StructKind, StructType, Type};
+    #[gather]
+    static LINKS: ScatteredReferencedSlice<LinkedShape>;
 
-    let fields: Vec<Field> = inventory::iter::<Link>
-        .into_iter()
-        .map(|shape| Field {
-            name: "shape.identifier to proper case",
+    struct SectionProjection<T: 'static> {
+        section: &'static TypedReferenceSection<T>,
+    }
 
-            shape: ShapeRef((*shape).into()),
+    struct Links;
 
-            offset: 0, /* TODO */
-            flags: FieldFlags::CHILD,
+    impl Links {
+        const fn const_into_iter(self) -> &'static [LinkedShape] {
+            // TODO: the following is a fundamental restriction (TypedSection::as_slice) is non-const
+            let project: SectionProjection<LinkedShape> = unsafe { std::mem::transmute(LINKS) };
+            project.section.as_slice()
+            Bounds::ra
+        }
+    }
 
-            rename: None,
-            alias: None,
-            attributes: &[],
-            doc: &[],
-            skip_serializing_if: None,
-            default: None,
-            invariants: None,
-            proxy: None,
-            format_proxies: &[],
-            metadata: None,
-        })
-        .collect();
+    impl ConstIntoIter for Links {
+        type IntoIter = TypedSection<LinkedShape>;
+        type Item = LinkedShape;
+        type Kind = IsIntoIterKind;
+        const ITEMS_NEED_DROP: bool = false;
+    }
 
-    let fields = fields.leak();
+    #[cfg(debug_assertions)]
+    const fn shape<T>() -> facet::Shape {
+        use std::mem;
 
-    let definition = StructType {
-        repr: Repr::default(),
-        kind: StructKind::Struct,
-        fields: &fields,
-    };
+        use facet::{Def, Field, FieldFlags, Repr, ShapeRef, StructKind, StructType, Type};
 
-    facet::Shape::builder_for_unsized::<T>("Config")
-        .def(Def::Undefined)
-        .ty(Type::User(facet::UserType::Struct(definition)))
-        .build()
+        const fn field(shape: &LinkedShape) -> Field {
+            Field {
+                name: "TODO: shape.identifier to proper case",
+
+                shape: ShapeRef(*shape),
+
+                offset: 0, /* TODO */
+                flags: FieldFlags::CHILD,
+
+                rename: None,
+                alias: None,
+                attributes: &[],
+                doc: &[],
+                skip_serializing_if: None,
+                default: None,
+                invariants: None,
+                proxy: None,
+                format_proxies: &[],
+                metadata: None,
+            }
+        }
+
+        let fields: &'static [Field] = konst::iter::collect_const!(Field => &[], map(field));
+
+        let definition = StructType {
+            repr: Repr::default(),
+            kind: StructKind::Struct,
+            fields,
+        };
+
+        facet::Shape::builder_for_unsized::<T>("Config")
+            .def(Def::Undefined)
+            .ty(Type::User(facet::UserType::Struct(definition)))
+            .build()
+    }
 }
 
 // macro_rules! root {
