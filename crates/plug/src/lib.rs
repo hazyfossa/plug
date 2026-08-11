@@ -13,7 +13,6 @@ use dyn_utils::{
 pub mod __codegen {
     pub use dyn_utils;
     pub use paste;
-    pub use typetag;
 }
 
 pub use dyn_utils::storage;
@@ -21,8 +20,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfigCell<T: Pluggable> {
-    #[serde(flatten)]
-    pub common: T::CommonConfig,
+    // #[serde(flatten)]
+    // pub common: T::CommonConfig,
     #[serde(flatten)]
     specific: T,
 }
@@ -38,7 +37,7 @@ impl<T: Pluggable> Deref for ConfigCell<T> {
 // trait_alias!(pub FromConfig: Serialize + DeserializeOwned);
 
 pub trait Pluggable: Sized + DynTrait {
-    type CommonConfig: FromConfig;
+    // type CommonConfig: FromConfig;
     fn plug<C>(config: &C) -> Option<ConfigCell<Self>>;
 }
 
