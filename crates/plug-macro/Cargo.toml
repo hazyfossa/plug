@@ -7,7 +7,7 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-darling = "0.24.0"
-proc-macro2 = "1.0.107"
-quote = "1.0.47"
-syn = "3.0.3"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "3", features = ["full"] }
+syn_derive = "0.2.0"
