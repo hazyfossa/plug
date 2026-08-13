@@ -1,6 +1,10 @@
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{Ident, Visibility};
+use quote::{ToTokens, TokenStreamExt, quote};
+use syn::{
+    Ident, Token, Visibility,
+    parse::{Parse, ParseStream},
+    punctuated::Punctuated,
+};
 
 pub trait MacroReturn {
     fn into_syn_result(self) -> syn::Result<TokenStream>;
@@ -52,10 +56,10 @@ macro_rules! bail {
     (@span $tokens:expr) => { $tokens.span() };
     (@span) => { proc_macro2::Span::call_site() };
 
-    ($($tokens:expr)? => $err:literal $($fmt:tt)*) => {
+    ($($tokens:expr)? => $($fmt:tt)*) => {
         return Err(syn::Error::new(
             $crate::bail!(@span $($tokens)?),
-            format!($err $($fmt)*)
+            format!($($fmt)*)
         ))
     };
 }
@@ -80,74 +84,16 @@ pub fn purescope(vis: Visibility, ident: Ident, content: TokenStream) -> TokenSt
     }
 }
 
-macro_rules! tkpass {
-    (struct $name:ident {
-        $($field:ident: $type:ty),*
-        $(,)?
-    }) => {
-        struct $name {
-            $($field: $type),*
-        }
+pub struct TokenVec<T>(pub Vec<T>);
 
-        impl syn::parse::Parse for $name {
-            fn parse(input: ParseStream) -> Result<Self> {
-                $(
-                    let $field;
-                    syn::bracketed!($field in input);
-                    let $field = $field.parse()?;
-                )*
-
-                Ok(Self { $(
-                    $field,
-                )* })
-
-            }
-        }
-
-        impl quote::ToTokens for $name {
-            fn to_tokens(&self, tokens: &mut TokenStream) {
-                $(
-                    syn::token::Bracket::default()
-                    .surround(tokens, |cx|
-                        self.$field.to_tokens(cx)
-                    );
-                )*
-
-            }
-        }
-    };
-
-    (enum $name:ident {
-        $($field:ident)*
-    }) => {
-        enum $name { $($field)* }
-
-        impl syn::parse::Parse for $name {
-            fn parse(input: ParseStream) -> Result<Self> {
-                $(
-                    let $field;
-                    syn::bracketed!($field in input);
-                    let $field = $field.parse()?;
-                )*
-
-                Ok(Self { $(
-                    $field,
-                )* })
-
-            }
-        }
-
-        impl quote::ToTokens for $name {
-            fn to_tokens(&self, tokens: &mut TokenStream) {
-                $(
-                    syn::token::Bracket::default()
-                    .surround(tokens, |cx|
-                        self.$field.to_tokens(cx)
-                    );
-                )*
-
-            }
-        }
+impl<T: Parse> Parse for TokenVec<T> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Punctuated::<T, Token![,]>::parse_terminated(input).map(|x| Self(x.into_iter().collect()))
     }
 }
-pub(crate) use tkpass;
+
+impl<T: ToTokens> ToTokens for TokenVec<T> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append_terminated(&self.0, syn::token::Comma::default());
+    }
+}
