@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use proc_macro2::TokenStream;
 use quote::{ToTokens, TokenStreamExt, quote};
 use syn::{
@@ -84,16 +86,32 @@ pub fn purescope(vis: Visibility, ident: Ident, content: TokenStream) -> TokenSt
     }
 }
 
-pub struct TokenVec<T>(pub Vec<T>);
+pub struct Many<T, C = Vec<T>> {
+    pub inner: C,
+    _phantom: PhantomData<T>,
+}
 
-impl<T: Parse> Parse for TokenVec<T> {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Punctuated::<T, Token![,]>::parse_terminated(input).map(|x| Self(x.into_iter().collect()))
+impl<T, C: FromIterator<T>> FromIterator<T> for Many<T, C> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self {
+            inner: iter.into_iter().collect(),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<T: ToTokens> ToTokens for TokenVec<T> {
+impl<T: Parse, C: FromIterator<T>> Parse for Many<T, C> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Punctuated::<T, Token![,]>::parse_terminated(input).map(|x| x.into_iter().collect())
+    }
+}
+
+impl<T, C> ToTokens for Many<T, C>
+where
+    T: ToTokens,
+    for<'a> &'a C: IntoIterator<Item = &'a T>,
+{
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.append_terminated(&self.0, syn::token::Comma::default());
+        tokens.append_terminated(&self.inner, syn::token::Comma::default());
     }
 }

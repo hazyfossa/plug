@@ -5,7 +5,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{
-    parse::{Parse, ParseStream},
+    parse::{Nothing, Parse, ParseStream},
     spanned::Spanned,
     *,
 };
@@ -43,21 +43,24 @@ enum Code {
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x) => trait_to_interface(attrs, x),
-        Code::Struct(x) => struct_to_object(x),
-        Code::Impl(x) => register_impl(x),
+        Code::Struct(x) => struct_to_object(attrs, x),
+        Code::Impl(x) => register_impl(attrs, x),
     }
 }
 
 #[derive(Clone, Parse, ToTokens)]
 enum Mode {
-    #[parse(peek = Token![@])]
+    #[parse(peek = Token![mod])]
     FromMod,
+    #[parse(peek = Token![dyn])]
+    Dynamic,
+
     Direct,
 }
 
 struct ParsedAttrs {
     mode: Mode,
-    paths: TokenVec<Path>,
+    paths: Option<Vec<Path>>,
 }
 
 // TODO: derive this
@@ -65,35 +68,21 @@ impl Parse for ParsedAttrs {
     fn parse(input: ParseStream) -> Result<Self> {
         let mode: Mode = input.parse()?;
 
-        let paths = match mode {
-            Mode::Direct => input.parse(),
+        let paths: Option<Many<Path>> = match mode {
+            Mode::Direct => Some(input.parse()?),
             Mode::FromMod => {
-                let _marker = input.parse::<Token![@]>()?;
+                let _marker = input.parse::<Token![mod]>()?;
                 let content;
                 syn::parenthesized!(content in input);
-                content.parse()
+                Some(content.parse()?)
             }
-        }?;
+            Mode::Dynamic => None,
+        };
+
+        let paths = paths.map(|x| x.inner);
 
         Ok(ParsedAttrs { mode, paths })
     }
-}
-
-impl ParsedAttrs {
-    fn resolve_impls(self) -> Vec<Path> {
-        match self.mode {
-            Mode::Direct => self.paths.0,
-            Mode::FromMod => todo!("resolve mod"),
-        }
-    }
-}
-
-fn match_attr_flag<'a>(field: &'a Field, flag: &str) -> Option<&'a Attribute> {
-    field.attrs.iter().find(|attr| {
-        let exact_match = attr.path().is_ident(flag);
-        let is_standalone = matches!(attr.meta, Meta::Path(_));
-        exact_match && is_standalone
-    })
 }
 
 struct StateMatcher {
@@ -142,7 +131,9 @@ fn outscope_field(vis: Visibility) -> Visibility {
     }
 }
 
-fn struct_to_object(input: ItemStruct) -> Result<TokenStream> {
+fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
+    let _: Nothing = syn::parse2(attrs)?;
+
     let mut config: Vec<Field> = Vec::new();
     let mut state: Vec<Field> = Vec::new();
 
@@ -183,19 +174,6 @@ fn struct_to_object(input: ItemStruct) -> Result<TokenStream> {
     Ok(purescope(input.vis, input.ident, content))
 }
 
-const REGISTRATION_MARKER: &str = "__primary_object_for_this_module";
-
-fn register_impl(input: ItemImpl) -> Result<TokenStream> {
-    let interface = match input.trait_ {
-        Some((path, _)) => path,
-        None => bail!(=> "This macro only makes sense for interface implementations"),
-    };
-
-    let content = quote! {};
-
-    Ok(content)
-}
-
 #[derive(Parse, ToTokens)]
 enum FnKind {
     Regular,
@@ -212,123 +190,175 @@ struct FnShape {
 #[derive(Parse, ToTokens)]
 struct MetaForInterface {
     mode: Mode,
-    shape: TokenVec<FnShape>,
+    const_methods: Many<Ident>,
+}
+
+struct EnumDispatch {
+    impls: Vec<Path>,
+    shape: Vec<FnShape>,
+}
+
+impl EnumDispatch {
+    fn construct(self) -> TokenStream {
+        todo!()
+    }
+}
+
+struct DynDispatch {
+    shape: Vec<FnShape>,
+}
+
+impl DynDispatch {
+    fn construct(self) -> TokenStream {
+        todo!()
+    }
 }
 
 struct Interface {
     mode: Mode,
-    impls: Vec<Path>,
+    paths: Option<Vec<Path>>,
     methods: Vec<FnShape>,
     direct_methods: Vec<ItemFn>,
 }
 
-impl Interface {
-    fn new(attrs: ParsedAttrs) -> Self {
+enum AsyncDispatch {
+    Direct,
+    Outlined,
+}
+
+// TODO: We could technically borrow idents from syn here
+// but this will propagate lifetimes everywhere
+struct InterfaceShape {
+    ident: Ident,
+    methods: Vec<FnShape>,
+    // TODO: const, types
+}
+
+impl InterfaceShape {
+    fn new(ident: Ident) -> Self {
         Self {
-            mode: attrs.mode.clone(),
-            impls: attrs.resolve_impls(),
+            ident,
             methods: Vec::new(),
-            direct_methods: Vec::new(),
         }
     }
 
-    fn register_method(&mut self, function: TraitItemFn) {
-        let function = function.sig; // TODO: should we forward anything here?
+    fn register_method(&mut self, input: &TraitItemFn) -> Result<()> {
+        let function = &input.sig;
 
         // TODO: modifers that we want but syn doesn't parse: final
-        // TODO: error on const async
 
-        let kind = if function.asyncness.is_some() {
+        let is_async = function.asyncness.is_some();
+        let is_const = function.constness.is_some();
+
+        if is_async && is_const {
+            bail!(function.constness => "constant async methods are impossible")
+        }
+
+        let kind = if is_async {
             FnKind::Async
-        } else if function.constness.is_some() {
+        } else if is_const {
             FnKind::Const
         } else {
             FnKind::Regular
         };
 
         self.methods.push(FnShape {
-            name: function.ident,
+            name: function.ident.clone(),
             kind,
         });
+
+        Ok(())
     }
 
-    fn meta(self) -> MetaForInterface {
-        MetaForInterface {
-            mode: self.mode,
-            shape: TokenVec(self.methods),
-        }
-    }
+    fn parse(input: &ItemTrait) -> Result<Self> {
+        let mut this = Self::new(input.ident.clone());
 
-    fn construct(self, span: Span) -> TokenStream {
-        let variant_idents: Vec<_> = (0..self.impls.len())
-            .map(|x| format_ident!("V{x}", span = span))
-            .collect();
+        for item in &input.items {
+            match item {
+                TraitItem::Fn(function) => {
+                    this.register_method(function)?;
+                }
 
-        let variants: Vec<_> = variant_idents
-            .iter()
-            .zip(self.impls)
-            .map(|(v, imp)| quote! { #v(#imp) })
-            .collect();
+                // TODO: const support
+                // a polyfill to const fn is required for dispatch
+                // we could also treat these differently in remote codegen
+                // (autogenerated get_property method)
+                TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
 
-        let meta = export(
-            "meta",
-            MetaForInterface {
-                mode: self.mode,
-                shape: TokenVec(self.methods),
-            },
-        );
+                // TODO: do we object-ify recursively or require to pass concrete (like dyn does)
+                TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
 
-        quote_spanned! { span=>
-            pub trait Trait {}
-
-            // This alternatively would be newtype of Stored<S, dyn T>
-            pub enum Object {
-                #(#variants,)*
+                TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
+                x => bail!(x => "This syntax is not supported inside interfaces"),
             }
-
-            impl Object {}
-
-            #meta
         }
+
+        Ok(this)
     }
 }
 
 fn trait_to_interface(attrs: TokenStream, input: ItemTrait) -> Result<TokenStream> {
     ensure_empty!(
         input.generics.params,
-        "Generic objects are not supported (yet)"
+        "Generic interfaces are not supported (yet)"
     );
 
     let attrs: ParsedAttrs = syn::parse2(attrs)?;
-    let mut interface = Interface::new(attrs);
+    let shape = InterfaceShape::parse(&input)?;
 
-    for item in input.items {
-        match item {
-            TraitItem::Fn(function) => {
-                interface.register_method(function);
-            }
+    let const_methods = shape
+        .methods
+        .iter()
+        .filter_map(|x| matches!(x.kind, FnKind::Const).then_some(x.name.clone()))
+        .collect();
 
-            // TODO: const support
-            // a polyfill to const fn is required for dispatch
-            // we could also treat these differently in remote codegen
-            // (autogenerated get_property method)
-            TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
+    let meta = export(
+        "meta",
+        MetaForInterface {
+            mode: attrs.mode,
+            const_methods,
+        },
+    );
 
-            // TODO: do we object-ify recursively or require to pass concrete (like dyn does)
-            TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
+    let content = quote! {
+        pub trait Trait {}
 
-            TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
-            x => bail!(x => "This syntax is not supported inside interfaces"),
-        }
-    }
+        #meta
+    };
 
-    let content = interface.construct(Span::call_site());
     Ok(purescope(input.vis, input.ident, content))
 }
 
-fn register_impl_inner(object: Ident, resolution_mode: Mode) -> TokenStream {
-    match resolution_mode {
-        Mode::Direct => TokenStream::new(),
-        Mode::FromMod => export(REGISTRATION_MARKER, object),
-    }
+fn registered_module_object() -> Ident {
+    format_ident!("__primary_object_for_this_module")
+}
+
+fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
+    let interface = match input.trait_ {
+        Some((path, _)) => path,
+        None => bail!(=> "This macro only makes sense for interface implementations"),
+    };
+
+    ensure_empty!(
+        input.generics.params,
+        "Generic interfaces are not supported (yet)"
+    );
+
+    let content = todo!("call with tokens");
+
+    Ok(content)
+}
+
+fn register_impl_inner(input: ItemImpl, resolution_mode: Mode) -> TokenStream {
+    let markers = match resolution_mode {
+        Mode::Direct => TokenStream::default(),
+        Mode::FromMod => {
+            let marker = registered_module_object();
+            let target = input.self_ty.clone();
+            quote! { pub type #marker = #target; }
+        }
+        Mode::Dynamic => todo!("linkage"),
+    };
+
+    quote! { #markers #input }
 }
