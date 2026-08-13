@@ -2,8 +2,14 @@
 
 #![allow(dead_code)]
 
+// TODO: it is most definitely possible to avoid the ImplMetadata passing
+// at an unclear performance cost
+// note that such mode of operation will even be required for dyn impls
+// if the cost is small enough, we may get rid of compile-time costly
+// metadata passing and resolve all FnKind mismatches via dyn path
+
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, format_ident, quote, quote_spanned};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     parse::{Nothing, Parse, ParseStream},
     spanned::Spanned,
@@ -110,11 +116,6 @@ impl StateMatcher {
 
         Ok(Some(self.passed_marker))
     }
-
-    // fn is_state(&mut self, field: &Field) -> Result<bool> {
-    //     self.check_for_marker(field)?;
-    //     Ok(self.passed_marker) // || match_attr_flag(field, "state").is_some()
-    // }
 }
 
 // TODO: rewrite this as quote!
@@ -174,63 +175,128 @@ fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream
     Ok(purescope(input.vis, input.ident, content))
 }
 
+type ObjectPath = Path;
+type FunctionIdent = Ident;
+type TaggedVariantIdent = Ident;
+
+type Methods<T> = Vec<(FunctionIdent, T)>;
+
 #[derive(Parse, ToTokens)]
-enum FnKind {
+enum AsyncDispatchModifier {
+    Inline,
+    Outline,
+}
+
+#[derive(Parse, ToTokens)]
+enum FnKindAsDefined {
     Regular,
-    Async,
-    Const,
+    // TODO: replace with special three-state enum (also useful for FnKindAsImplemented)
+    Async { dispatch: AsyncDispatchModifier, is_final: bool },
+    Const { relaxed: bool },
 }
 
-#[derive(Parse, ToTokens)]
-struct FnShape {
-    name: Ident,
-    kind: FnKind,
-}
-
+// Read by implementations
 #[derive(Parse, ToTokens)]
 struct MetaForInterface {
     mode: Mode,
-    const_methods: Many<Ident>,
+    methods: Methods<FnKindAsDefined>,
 }
 
-struct EnumDispatch {
-    impls: Vec<Path>,
-    shape: Vec<FnShape>,
+#[derive(Parse, ToTokens)]
+enum FnKindAsImplemented {
+    Regular,
+    Async { dispatch: Option<AsyncDispatchModifier> },
+    Const { relaxed: bool },
 }
 
-impl EnumDispatch {
-    fn construct(self) -> TokenStream {
-        todo!()
-    }
-}
-
-struct DynDispatch {
-    shape: Vec<FnShape>,
-}
-
-impl DynDispatch {
-    fn construct(self) -> TokenStream {
-        todo!()
-    }
+// Read by interface
+struct MetaForImpl {
+    tag: Option<String>,
+    tag_ident: Option<Ident>,
+    shape: Methods<FnKindAsImplemented>,
 }
 
 struct Interface {
     mode: Mode,
     paths: Option<Vec<Path>>,
-    methods: Vec<FnShape>,
+    methods: Vec<(Ident, FnKindAsDefined)>,
     direct_methods: Vec<ItemFn>,
 }
 
-enum AsyncDispatch {
+enum DispatchKind {
     Direct,
-    Outlined,
+    InlineFuture,
+    OutlineFuture,
+}
+
+fn fn_dispatch_resolve(interface_defined: FnKindAsDefined, impl_defined: FnKindAsImplemented) -> DispatchKind {
+    match (interface_defined, impl_defined) {
+        (FnKindAsDefined::Const {.. }, _) => DispatchKind::Direct,
+        (FnKindAsDefined::Async { dispatch: a, is_final }, FnKindAsImplemented::Async { dispatch: b }) => todo!(),
+        (FnKindAsDefined::Async { .. }, _) => DispatchKind::Direct,
+        _ => todo!(),
+    }
+}
+
+fn dispatch(
+    sig: Signature,
+    impls: Vec<(TaggedVariantIdent, FnKindAsDefined)>,
+    outline_by_default: bool,
+) -> TokenStream {
+    let dispatch_kind_map: Vec<_> = 
+    let can_be_const = impls.iter().all(|(_, kind)| matches!(kind, FnKindAsDefined::Const));
+
+    let must_be_async = impls.iter().any(|(_, kind)| match kind {
+        FnKindAsDefined::Async { dispatch } => !dispatch.is_outline(outline_by_default),
+        _ => false,
+    });
+
+    let modifier = if can_be_const {
+        quote! { const }
+    } else if must_be_async {
+        quote! { async }
+    } else {
+        quote! { /* */ }
+    };
+
+    let Signature {
+        ident,
+        generics,
+        inputs,
+        output,
+        ..
+    } = sig;
+
+    let mut args = Vec::new();
+    let mut receiver = None;
+    for arg in &inputs {
+        match arg {
+            FnArg::Receiver(x) => {
+                receiver.replace(x);
+            }
+            FnArg::Typed(pattern) => {
+                let ident = match pattern.pat.as_ref() {
+                    Pat::Ident(x) => &x.ident,
+                    _ => panic!("x"),
+                };
+
+                args.push(ident.clone());
+            }
+        }
+    }
+
+    quote! {
+        #modifier fn #generics #ident(#inputs) -> #output {
+
+        }
+    }
 }
 
 // TODO: We could technically borrow idents from syn here
 // but this will propagate lifetimes everywhere
 struct InterfaceShape {
     ident: Ident,
-    methods: Vec<FnShape>,
+    methods: Vec<(FunctionIdent, FnKindAsDefined)>,
     // TODO: const, types
 }
 
@@ -243,6 +309,7 @@ impl InterfaceShape {
     }
 
     fn register_method(&mut self, input: &TraitItemFn) -> Result<()> {
+        let attrs = &input.attrs;
         let function = &input.sig;
 
         // TODO: modifers that we want but syn doesn't parse: final
@@ -255,17 +322,16 @@ impl InterfaceShape {
         }
 
         let kind = if is_async {
-            FnKind::Async
+            FnKindAsDefined::Async
         } else if is_const {
-            FnKind::Const
+            FnKindAsDefined::Const
         } else {
-            FnKind::Regular
+            FnKindAsDefined::Regular
         };
 
-        self.methods.push(FnShape {
-            name: function.ident.clone(),
-            kind,
-        });
+        let ident = function.ident.clone();
+
+        self.methods.push((ident, kind));
 
         Ok(())
     }
@@ -306,17 +372,12 @@ fn trait_to_interface(attrs: TokenStream, input: ItemTrait) -> Result<TokenStrea
     let attrs: ParsedAttrs = syn::parse2(attrs)?;
     let shape = InterfaceShape::parse(&input)?;
 
-    let const_methods = shape
-        .methods
-        .iter()
-        .filter_map(|x| matches!(x.kind, FnKind::Const).then_some(x.name.clone()))
-        .collect();
 
     let meta = export(
         "meta",
         MetaForInterface {
             mode: attrs.mode,
-            const_methods,
+            methods: shape.methods,
         },
     );
 
