@@ -1,9 +1,56 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use serde::{Deserialize, Serialize};
-use syn::{FnArg, Signature};
+use syn::{FnArg, Ident, Pat, Result, Signature, parse_quote, spanned::Spanned};
 
-use crate::{AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode};
+use crate::{
+    AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode, bail,
+};
+
+mod meta_passing {
+    use std::error::Error;
+
+    use base64::{Engine, engine::general_purpose::STANDARD as base64};
+    use proc_macro2::TokenStream;
+    use quote::{format_ident, quote};
+    use serde::{Serialize, de::DeserializeOwned};
+
+    use crate::utils::bail;
+
+    fn encode<T: Serialize>(input: T) -> Result<String, Box<dyn Error>> {
+        let data = minicbor_serde::to_vec(input)?;
+        let data = base64.encode(data);
+
+        Ok(data)
+    }
+
+    fn decode<T: DeserializeOwned>(input: String) -> Result<T, Box<dyn Error>> {
+        let data = base64.decode(input)?;
+        let data = minicbor_serde::from_slice(&data)?;
+
+        Ok(data)
+    }
+
+    pub fn export<T: Serialize>(marker: &str, input: T) -> syn::Result<TokenStream> {
+        let ident = format_ident!("{marker}");
+
+        let data = match encode(input) {
+            Ok(x) => x,
+            Err(e) => bail!(=> "Failed to encode metadata: {e:?}"),
+        };
+
+        let content = quote! {
+            #[doc(hidden)]
+            macro_rules! #ident {
+                ($($m:tt)*) => { $($m)*!(#data); };
+            }
+
+            pub(crate) use #ident;
+        };
+
+        Ok(content)
+    }
+}
 
 // Read by implementations
 #[derive(Serialize, Deserialize)]
@@ -21,6 +68,7 @@ struct MetaForImpl {
 
 enum DispatchKind {
     Direct,
+    Const,
     InlineFuture,
     OutlineFuture,
 }
@@ -48,7 +96,9 @@ fn async_dispatch_resolve(
 
 fn fn_dispatch_resolve(as_defined: FnKind, as_implemented: FnKind) -> DispatchKind {
     match (as_defined, as_implemented) {
-        (FnKind::Const { .. }, _) => DispatchKind::Direct,
+        (FnKind::Const, _) => DispatchKind::Direct,
+        (FnKind::Regular, FnKind::Const) => DispatchKind::Direct, // TODO: annotate here that we can raise to const
+
         (FnKind::Async { dispatch: a }, FnKind::Async { dispatch: b }) => {
             async_dispatch_resolve(a.as_deref(), b.as_deref())
         }
@@ -57,59 +107,76 @@ fn fn_dispatch_resolve(as_defined: FnKind, as_implemented: FnKind) -> DispatchKi
     }
 }
 
+type Variant = Ident;
+
+struct FnArgs {
+    receives_self: bool,
+    idents: Vec<Ident>,
+}
+
+impl FnArgs {
+    fn parse(sig: &Signature) -> Result<Self> {
+        let mut idents = Vec::new();
+        let mut receives_self = false;
+
+        for arg in &sig.inputs {
+            match arg {
+                FnArg::Receiver(_) => {
+                    receives_self = true;
+                }
+                FnArg::Typed(pattern) => {
+                    let ident = match pattern.pat.as_ref() {
+                        Pat::Ident(x) => &x.ident,
+                        other => bail!(other => "unsupported argument pattern"),
+                    };
+
+                    idents.push(ident.clone());
+                }
+            }
+        }
+
+        Ok(Self {
+            receives_self,
+            idents,
+        })
+    }
+}
+
+fn dispatch_method(mut sig: Signature, impls: Vec<(Variant, DispatchKind)>) -> Result<TokenStream> {
+    let can_be_const = impls
+        .iter()
+        .all(|(_, kind)| matches!(kind, DispatchKind::Const));
+
+    let must_be_async = impls
+        .iter()
+        .any(|(_, kind)| matches!(kind, DispatchKind::InlineFuture));
+
+    let modifier = if can_be_const {
+        quote! { const }
+    } else if must_be_async {
+        quote! { async }
+    } else {
+        quote! { /* */ }
+    };
+
+    let args = FnArgs::parse(&sig)?;
+
+    if !args.receives_self {
+        sig.inputs.insert(0, parse_quote!(tag: Tag));
+    }
+
+    let content = quote! {
+        #sig {
+
+        }
+    };
+
+    Ok(content)
+}
+
 struct Resolved {
     shape: InterfaceShape,
     impls: Vec<MetaForImpl>,
 }
 
-impl Resolved {
-    fn dispatch_method(&self, sig: Signature) -> TokenStream {
-        // let dispatch_kind_map: Vec<_> =
-        let can_be_const = impls.iter().all(|(_, kind)| matches!(kind, FnKind::Const));
-
-        let must_be_async = impls.iter().any(|(_, kind)| match kind {
-            FnKind::Async { dispatch } => !dispatch.is_outline(outline_by_default),
-            _ => false,
-        });
-
-        let modifier = if can_be_const {
-            quote! { const }
-        } else if must_be_async {
-            quote! { async }
-        } else {
-            quote! { /* */ }
-        };
-
-        let Signature {
-            ident,
-            generics,
-            inputs,
-            output,
-            ..
-        } = sig;
-
-        let mut args = Vec::new();
-        let mut receiver = None;
-        for arg in &inputs {
-            match arg {
-                FnArg::Receiver(x) => {
-                    receiver.replace(x);
-                }
-                FnArg::Typed(pattern) => {
-                    let ident = match pattern.pat.as_ref() {
-                        Pat::Ident(x) => &x.ident,
-                        _ => panic!("x"),
-                    };
-
-                    args.push(ident.clone());
-                }
-            }
-        }
-
-        quote! {
-            #modifier fn #generics #ident(#inputs) -> #output {
-
-            }
-        }
-    }
-}
+impl Resolved {}

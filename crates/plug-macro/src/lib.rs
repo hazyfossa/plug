@@ -1,16 +1,18 @@
-// TODO: syn is both heavy and too restrictive (disallows CFIT)
-
 #![allow(dead_code)]
+
+// TODO: syn is both heavy and too restrictive (disallows CFIT, finals)
 
 // TODO: it is most definitely possible to avoid the ImplMetadata passing
 // at an unclear performance cost
 // note that such mode of operation will even be required for dyn impls
 // if the cost is small enough, we may get rid of compile-time costly
 // metadata passing and resolve all FnKind mismatches via dyn path
+//
+// After some pondering, the cost seems to be a branch on associated const 
+// (per call). Check if compiler optimizes.
 
-use std::collections::HashMap;
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{TokenStream};
 use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
@@ -20,13 +22,14 @@ use syn::{
 };
 use syn_derive::{Parse, ToTokens};
 
-mod meta;
-use meta::*;
+mod object;
 
 mod utils;
 use utils::*;
 
 mod dispatch;
+
+const NAME: &str = "plug";
 
 define!(plug = plug_impl);
 
@@ -112,20 +115,6 @@ impl StateMatcher {
     }
 }
 
-// TODO: rewrite this as quote!
-fn outscope_field(vis: Visibility) -> Visibility {
-    if matches!(vis, Visibility::Inherited) {
-        Visibility::Restricted(VisRestricted {
-            pub_token: token::Pub::default(),
-            paren_token: token::Paren::default(),
-            in_token: None,
-            path: Box::new(token::Super::default().into()),
-        })
-    } else {
-        vis
-    }
-}
-
 fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
     let _: Nothing = syn::parse2(attrs)?;
 
@@ -141,7 +130,10 @@ fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream
             None => continue,
         };
 
-        field.vis = outscope_field(field.vis);
+        if matches!(field.vis, Visibility::Inherited) {
+            field.vis = parse_quote! { pub(super) }
+        };
+
         target.push(field);
     }
 
@@ -201,7 +193,6 @@ type Methods = Vec<(FunctionIdent, FnKind)>;
 struct InterfaceShape {
     ident: Ident,
     methods: Methods,
-    methods_attr_map: HashMap<FunctionIdent, Span>,
     // TODO: const, types
     final_method_impls: Vec<ItemFn>,
 }
@@ -211,7 +202,6 @@ impl InterfaceShape {
         Self {
             ident,
             methods: Vec::new(),
-            methods_attr_map: HashMap::new(),
             final_method_impls: Vec::new(),
         }
     }
@@ -247,7 +237,6 @@ impl InterfaceShape {
             FnKind::Regular
         };
 
-        self.methods_attr_map.insert(name, attrs.)
         self.methods.push((name, kind));
 
         Ok(())

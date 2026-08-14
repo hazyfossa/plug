@@ -4,23 +4,24 @@ use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
-    Attribute, Ident, Meta, Token, Visibility,
+    Attribute, Ident, Result, Token, Visibility,
     parse::{Parse, ParseStream},
+    parse_quote,
     punctuated::Punctuated,
 };
 
 pub trait MacroReturn {
-    fn into_syn_result(self) -> syn::Result<TokenStream>;
+    fn into_syn_result(self) -> Result<TokenStream>;
 }
 
-impl MacroReturn for syn::Result<TokenStream> {
-    fn into_syn_result(self) -> syn::Result<TokenStream> {
+impl MacroReturn for Result<TokenStream> {
+    fn into_syn_result(self) -> Result<TokenStream> {
         self
     }
 }
 
 impl MacroReturn for TokenStream {
-    fn into_syn_result(self) -> syn::Result<TokenStream> {
+    fn into_syn_result(self) -> Result<TokenStream> {
         Ok(self)
     }
 }
@@ -117,14 +118,6 @@ where
     }
 }
 
-pub fn query_attr_flag<'a>(attrs: &'a Vec<Attribute>, flag: &str) -> Option<&'a Attribute> {
-    attrs.iter().find(|attr| {
-        attr.path().is_ident(flag)
-                // Ensure a bare flag
-                && matches!(attr.meta, Meta::Path(_))
-    })
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct WithSpan<T> {
     inner: T,
@@ -150,5 +143,20 @@ impl<T> std::ops::Deref for WithSpan<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+struct Attrs(Vec<Attribute>);
+
+impl Attrs {
+    fn extract(input: &mut Vec<Attribute>) -> Result<Self> {
+        input
+            .extract_if(.., |attr| attr.path().is_ident(crate::NAME))
+            .map(|attr| {
+                let meta = &attr.meta.require_list()?.tokens;
+                Ok(parse_quote!(#[#meta]))
+            })
+            .collect::<Result<_>>()
+            .map(Self)
     }
 }
