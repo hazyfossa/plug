@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, TokenStreamExt, quote};
 use syn::{
-    Ident, Token, Visibility,
+    Attribute, Field, Ident, Meta, Token, Visibility,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
@@ -114,4 +114,12 @@ where
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.append_terminated(&self.inner, syn::token::Comma::default());
     }
+}
+
+pub fn query_attr_flag<'a>(attrs: &'a Vec<Attribute>, flag: &str) -> Option<&'a Attribute> {
+    attrs.iter().find(|attr| {
+        attr.path().is_ident(flag)
+                // Ensure a bare flag
+                && matches!(attr.meta, Meta::Path(_))
+    })
 }

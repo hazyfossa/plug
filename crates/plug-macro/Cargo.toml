@@ -7,7 +7,12 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
+base64 = "0.23.1"
+minicbor-serde = { version = "0.7.1", features = ["std"] }
 proc-macro2 = "1"
 quote = "1"
+serde = { version = "1", features = ["derive"] }
 syn = { version = "3", features = ["full"] }
+
+# TODO: remove
 syn_derive = "0.2.0"
