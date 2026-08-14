@@ -8,15 +8,13 @@
 // if the cost is small enough, we may get rid of compile-time costly
 // metadata passing and resolve all FnKind mismatches via dyn path
 //
-// After some pondering, the cost seems to be a branch on associated const 
+// After some pondering, the cost seems to be a branch on associated const
 // (per call). Check if compiler optimizes.
 
-
-use proc_macro2::{TokenStream};
-use quote::{format_ident, quote};
+use proc_macro2::TokenStream;
 use serde::{Deserialize, Serialize};
 use syn::{
-    parse::{Nothing, Parse, ParseStream},
+    parse::{Nothing, ParseStream},
     spanned::Spanned,
     *,
 };
@@ -28,6 +26,7 @@ mod utils;
 use utils::*;
 
 mod dispatch;
+use dispatch::Dispatch;
 
 const NAME: &str = "plug";
 
@@ -46,7 +45,7 @@ enum Code {
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x) => trait_to_interface(attrs, x),
-        Code::Struct(x) => struct_to_object(attrs, x),
+        Code::Struct(x) => object::struct_to_object(attrs, x),
         Code::Impl(x) => register_impl(attrs, x),
     }
 }
@@ -61,115 +60,18 @@ enum Mode {
     Direct,
 }
 
-struct ParsedAttrs {
-    mode: Mode,
-    paths: Option<Vec<Path>>,
-}
-
-// TODO: derive this
-impl Parse for ParsedAttrs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let mode: Mode = input.parse()?;
-
-        let paths: Option<Many<Path>> = match mode {
-            Mode::Direct => Some(input.parse()?),
-            Mode::FromMod => {
-                let _marker = input.parse::<Token![mod]>()?;
-                let content;
-                syn::parenthesized!(content in input);
-                Some(content.parse()?)
-            }
-            Mode::Dynamic => None,
-        };
-
-        let paths = paths.map(|x| x.inner);
-
-        Ok(ParsedAttrs { mode, paths })
-    }
-}
-
-struct StateMatcher {
-    passed_marker: bool,
-}
-
-impl StateMatcher {
-    fn new() -> Self {
-        Self {
-            passed_marker: false,
-        }
-    }
-
-    fn is_state(&mut self, field: &Field) -> Result<Option<bool>> {
-        // TODO: consider other approaches
-        // (but not attrs, they do not work)
-        if matches!(field.ty, Type::Never(_)) {
-            if self.passed_marker {
-                bail!(field.ty => "An object cannot have >1 state separator");
-            } else {
-                self.passed_marker = true;
-                return Ok(None);
-            }
-        }
-
-        Ok(Some(self.passed_marker))
-    }
-}
-
-fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
-    let _: Nothing = syn::parse2(attrs)?;
-
-    let mut config: Vec<Field> = Vec::new();
-    let mut state: Vec<Field> = Vec::new();
-
-    let mut state_matcher = StateMatcher::new();
-
-    for mut field in input.fields {
-        let target = match state_matcher.is_state(&field)? {
-            Some(true) => &mut state,
-            Some(false) => &mut config,
-            None => continue,
-        };
-
-        if matches!(field.vis, Visibility::Inherited) {
-            field.vis = parse_quote! { pub(super) }
-        };
-
-        target.push(field);
-    }
-
-    let attrs = input.attrs;
-
-    let content = quote! {
-        #(#attrs)*
-        pub struct Config {
-            #(#config,)*
-        }
-
-        // TODO: allow borrows from self
-        //
-        // TODO: make Borrow<Config> part of self
-        // (combined with self-ref allows borrow from Config)
-        pub struct State {
-            #(#state,)*
-        }
-
-        impl ::plug::State for State {
-            type Config = Config;
-        }
-    };
-
-    Ok(purescope(input.vis, input.ident, content))
-}
-
-type ObjectPath = Path;
-
+tokenum! {
 #[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 enum AsyncDispatchKind {
-    #[default]
     Inline,
-
     Outline,
+}}
+
+impl Default for AsyncDispatchKind {
+    fn default() -> Self {
+        Self::Inline
+    }
 }
 
 #[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
@@ -194,7 +96,7 @@ struct InterfaceShape {
     ident: Ident,
     methods: Methods,
     // TODO: const, types
-    final_method_impls: Vec<ItemFn>,
+    final_method_impls: Vec<TraitItemFn>,
 }
 
 impl InterfaceShape {
@@ -206,12 +108,17 @@ impl InterfaceShape {
         }
     }
 
-    fn register_method(&mut self, input: &TraitItemFn) -> Result<()> {
+    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
+        let mut attrs = Attrs::extract(&mut input.attrs)?;
+
+        let is_final = attrs.pull(["final"])?.is_some();
+        if is_final {
+            self.final_method_impls.push(input.clone());
+            return Ok(false);
+        }
+
         let function = &input.sig;
         let name = function.ident.to_string();
-
-        let attrs = &input.attrs;
-        
 
         // TODO: modifers that we want but syn doesn't parse: final
 
@@ -223,13 +130,16 @@ impl InterfaceShape {
         }
 
         let kind = if is_async {
-            let modifier = query_attr_flag(attrs, "outline")
-                .is_some()
-                .then_some(AsyncDispatchModifier::Outline)
-                .unwrap_or_default();
+            let dispatch = attrs
+                .pull_tokenum::<AsyncDispatchKind>()?
+                // TODO parse finality of dispatch
+                .map(|kind| {
+                    kind.map(|x| AsyncDispatchModifier {
+                        kind: x,
+                        is_final: false,
+                    })
+                });
 
-            // TODO: make this a modifier of modifier instead ( #[final(outline)] )
-            let is_final = query_attr_flag(&input.attrs., "dispatch_final");
             FnKind::Async { dispatch }
         } else if is_const {
             FnKind::Const
@@ -239,94 +149,58 @@ impl InterfaceShape {
 
         self.methods.push((name, kind));
 
-        Ok(())
+        Ok(true)
     }
 
-    fn parse(input: &ItemTrait) -> Result<Self> {
+    // This will split the stuff `plug` manages internally
+    // and leave the trait as suitable for IDE hints on impl
+    fn from_trait(input: &mut ItemTrait) -> Result<Self> {
         let mut this = Self::new(input.ident.clone());
 
-        for item in &input.items {
+        let mut ret = Vec::new();
+
+        for item in input.items.iter_mut() {
             match item {
-                TraitItem::Fn(function) => {
-                    this.register_method(function)?;
-                }
-
-                // TODO: const support
-                // a polyfill to const fn is required for dispatch
-                // we could also treat these differently in remote codegen
-                // (autogenerated get_property method)
+                TraitItem::Fn(f) => ret.push(this.register_method(f)?),
                 TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
-
-                // TODO: do we object-ify recursively or require to pass concrete (like dyn does)
                 TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
-
                 TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
                 x => bail!(x => "This syntax is not supported inside interfaces"),
             }
         }
 
+        retain_by_mask(&ret, &mut input.items);
+
         Ok(this)
     }
 }
 
-fn trait_to_interface(attrs: TokenStream, input: ItemTrait) -> Result<TokenStream> {
+fn trait_to_interface(attrs: TokenStream, mut input: ItemTrait) -> Result<TokenStream> {
     ensure_empty!(
         input.generics.params,
         "Generic interfaces are not supported (yet)"
     );
 
-    let attrs: ParsedAttrs = syn::parse2(attrs)?;
-    let shape = InterfaceShape::parse(&input)?;
-
-    let meta = export(
-        "meta",
-        MetaForInterface {
-            mode: attrs.mode,
-            methods: shape.methods,
-        },
-    )?;
-
-    let content = quote! {
-        pub trait Trait {}
-
-        #meta
-    };
+    let shape = InterfaceShape::from_trait(&mut input)?;
+    let content = dispatch::Impl::dispatch(attrs, shape)?;
 
     Ok(purescope(input.vis, input.ident, content))
 }
 
-fn registered_module_object() -> Ident {
-    format_ident!("__primary_object_for_this_module")
-}
-
 fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
+    let _: Nothing = syn::parse2(attrs)?;
+
     let interface = match input.trait_ {
         Some((path, _)) => path,
         None => bail!(=> "This macro only makes sense for interface implementations"),
     };
 
+    let object = input.self_ty;
+
     ensure_empty!(
         input.generics.params,
         "Generic interfaces are not supported (yet)"
     );
 
-    let content = todo!("call with tokens");
-
-    Ok(content)
-}
-
-fn register_impl_inner(input: ItemImpl, meta: MetaForInterface) -> Result<TokenStream> {
-    let (vis, ident) = match meta.mode {
-        Mode::Direct => (Visibility::Inherited, todo!("random ident")),
-        Mode::FromMod => (
-            Visibility::Public(token::Pub::default()),
-            registered_module_object(),
-        ),
-        Mode::Dynamic => todo!("whole different path here"),
-    };
-
-    let meta = export("meta", ())?; // TODO
-
-    let content = quote! { #meta #input };
-    Ok(purescope(vis, ident, content))
+    dispatch::Impl::register_impl(interface, object)
 }

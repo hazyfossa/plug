@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 plug-macro = { path = "../plug-macro" }
+
+[features]
+default = ["direct-dispatch"]
+direct-dispatch = ["plug-macro/direct"]

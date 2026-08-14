@@ -1,10 +1,16 @@
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
-use syn::{FnArg, Ident, Pat, Result, Signature, parse_quote, spanned::Spanned};
+use syn::{
+    FnArg, Ident, ItemImpl, Pat, Path, Result, Signature, Token, Type, Visibility,
+    parse::{Parse, ParseStream},
+    parse_quote,
+    spanned::Spanned,
+};
 
 use crate::{
-    AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode, bail,
+    AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Many, Methods, Mode, bail,
+    purescope,
 };
 
 mod meta_passing {
@@ -95,15 +101,25 @@ fn async_dispatch_resolve(
 }
 
 fn fn_dispatch_resolve(as_defined: FnKind, as_implemented: FnKind) -> DispatchKind {
-    match (as_defined, as_implemented) {
-        (FnKind::Const, _) => DispatchKind::Direct,
-        (FnKind::Regular, FnKind::Const) => DispatchKind::Direct, // TODO: annotate here that we can raise to const
+    use FnKind::*;
 
-        (FnKind::Async { dispatch: a }, FnKind::Async { dispatch: b }) => {
+    match (as_defined, as_implemented) {
+        // no matter how they are defined, const functions
+        // are always const-dispatchable
+        (_, Const) => DispatchKind::Const,
+
+        // Async dispatch is complex enough to have its own thing
+        (Async { dispatch: a }, Async { dispatch: b }) => {
             async_dispatch_resolve(a.as_deref(), b.as_deref())
         }
-        (FnKind::Async { .. }, _) => DispatchKind::Direct,
-        _ => todo!(),
+
+        // If an impl of an "async" method does not require it,
+        // dispatch it as a normal function
+        (Async { .. }, Regular) => DispatchKind::Direct,
+
+        (Regular, Regular) => DispatchKind::Direct,
+
+        _ => unreachable!("Pathological impl. This should have been caught at definition time."),
     }
 }
 
@@ -161,13 +177,19 @@ fn dispatch_method(mut sig: Signature, impls: Vec<(Variant, DispatchKind)>) -> R
 
     let args = FnArgs::parse(&sig)?;
 
-    if !args.receives_self {
-        sig.inputs.insert(0, parse_quote!(tag: Tag));
-    }
+    let determinant = match args.receives_self {
+        true => quote! { self },
+        false => {
+            sig.inputs.insert(0, parse_quote!(tag: Tag));
+            quote! { tag }
+        }
+    };
 
     let content = quote! {
         #sig {
+            match #determinant {
 
+            }
         }
     };
 
@@ -180,3 +202,75 @@ struct Resolved {
 }
 
 impl Resolved {}
+
+struct ParsedAttrs {
+    mode: Mode,
+    paths: Option<Vec<Path>>,
+}
+
+// TODO: derive this
+impl Parse for ParsedAttrs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mode: Mode = input.parse()?;
+
+        let paths: Option<Many<Path>> = match mode {
+            Mode::Direct => Some(input.parse()?),
+            Mode::FromMod => {
+                let _marker = input.parse::<Token![mod]>()?;
+                let content;
+                syn::parenthesized!(content in input);
+                Some(content.parse()?)
+            }
+            Mode::Dynamic => None,
+        };
+
+        let paths = paths.map(|x| x.inner);
+
+        Ok(ParsedAttrs { mode, paths })
+    }
+}
+
+pub struct Impl;
+
+impl super::Dispatch for Impl {
+    fn dispatch(attrs: TokenStream, shape: InterfaceShape) -> Result<TokenStream> {
+        let attrs: ParsedAttrs = syn::parse2(attrs)?;
+
+        let meta = meta_passing::export(
+            "meta",
+            MetaForInterface {
+                mode: attrs.mode,
+                methods: shape.methods,
+            },
+        )?;
+
+        let content = quote! {
+            pub trait Trait {}
+
+            #meta
+        };
+
+        Ok(content)
+    }
+
+    fn register_impl(target_interface: Path, object: Box<Type>) -> Result<TokenStream> {
+        todo!()
+    }
+}
+
+fn registered_module_object() -> Ident {
+    format_ident!("__primary_object_for_this_module")
+}
+
+fn register_impl_inner(input: ItemImpl, meta: MetaForInterface) -> Result<TokenStream> {
+    let (vis, ident) = match meta.mode {
+        Mode::Direct => (Visibility::Inherited, todo!("random ident")),
+        Mode::FromMod => (parse_quote!(pub), registered_module_object()),
+        Mode::Dynamic => todo!("whole different path here"),
+    };
+
+    let meta = meta_passing::export("meta", ())?; // TODO
+
+    let content = quote! { #meta #input };
+    Ok(purescope(vis, ident, content))
+}
