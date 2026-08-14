@@ -8,7 +8,9 @@
 // if the cost is small enough, we may get rid of compile-time costly
 // metadata passing and resolve all FnKind mismatches via dyn path
 
-use proc_macro2::TokenStream;
+use std::collections::HashMap;
+
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
@@ -23,6 +25,8 @@ use meta::*;
 
 mod utils;
 use utils::*;
+
+mod dispatch;
 
 define!(plug = plug_impl);
 
@@ -166,126 +170,38 @@ fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream
 }
 
 type ObjectPath = Path;
-type FunctionIdent = String;
-type TaggedVariantIdent = Ident;
 
-type Methods<T> = Vec<(FunctionIdent, T)>;
-
-#[derive(Serialize, Deserialize, Default)]
-enum AsyncDispatchModifier {
+#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+#[derive(Clone, Copy, Default)]
+enum AsyncDispatchKind {
     #[default]
     Inline,
 
     Outline,
 }
 
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+struct AsyncDispatchModifier {
+    kind: AsyncDispatchKind,
+    is_final: bool,
+}
+
+#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
 enum FnKind {
     Regular,
     Async {
-        dispatch: Option<AsyncDispatchModifier>,
-        dispatch_is_final: bool,
+        dispatch: Option<WithSpan<AsyncDispatchModifier>>,
     },
     Const,
 }
 
-// Read by implementations
-#[derive(Serialize, Deserialize)]
-struct MetaForInterface {
-    mode: Mode,
-    methods: Methods<FnKind>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct MetaForImpl {
-    tag: Option<String>,
-    tag_ident: Option<String>,
-    shape: Methods<FnKind>,
-}
-
-enum DispatchKind {
-    Direct,
-    InlineFuture,
-    OutlineFuture,
-}
-
-fn fn_dispatch_resolve(as_defined: FnKind, as_implemented: FnKind) -> DispatchKind {
-    match (as_defined, as_implemented) {
-        (FnKind::Const { .. }, _) => DispatchKind::Direct,
-        (
-            FnKind::Async {
-                dispatch: a,
-                dispatch_is_final: is_final,
-            },
-            FnKind::Async { dispatch: b },
-        ) => todo!(),
-        (FnKind::Async { .. }, _) => DispatchKind::Direct,
-        _ => todo!(),
-    }
-}
-
-fn dispatch(
-    sig: Signature,
-    impls: Vec<(TaggedVariantIdent, FnKind)>,
-    outline_by_default: bool,
-) -> TokenStream {
-    // let dispatch_kind_map: Vec<_> =
-    let can_be_const = impls.iter().all(|(_, kind)| matches!(kind, FnKind::Const));
-
-    let must_be_async = impls.iter().any(|(_, kind)| match kind {
-        FnKind::Async { dispatch } => !dispatch.is_outline(outline_by_default),
-        _ => false,
-    });
-
-    let modifier = if can_be_const {
-        quote! { const }
-    } else if must_be_async {
-        quote! { async }
-    } else {
-        quote! { /* */ }
-    };
-
-    let Signature {
-        ident,
-        generics,
-        inputs,
-        output,
-        ..
-    } = sig;
-
-    let mut args = Vec::new();
-    let mut receiver = None;
-    for arg in &inputs {
-        match arg {
-            FnArg::Receiver(x) => {
-                receiver.replace(x);
-            }
-            FnArg::Typed(pattern) => {
-                let ident = match pattern.pat.as_ref() {
-                    Pat::Ident(x) => &x.ident,
-                    _ => panic!("x"),
-                };
-
-                args.push(ident.clone());
-            }
-        }
-    }
-
-    quote! {
-        #modifier fn #generics #ident(#inputs) -> #output {
-
-        }
-    }
-}
-
-struct Interface {
-    shape: InterfaceShape,
-    impls: Vec<MetaForImpl>,
-}
+type FunctionIdent = String;
+type Methods = Vec<(FunctionIdent, FnKind)>;
 
 struct InterfaceShape {
     ident: Ident,
-    methods: Vec<(FunctionIdent, FnKind)>,
+    methods: Methods,
+    methods_attr_map: HashMap<FunctionIdent, Span>,
     // TODO: const, types
     final_method_impls: Vec<ItemFn>,
 }
@@ -295,12 +211,17 @@ impl InterfaceShape {
         Self {
             ident,
             methods: Vec::new(),
+            methods_attr_map: HashMap::new(),
             final_method_impls: Vec::new(),
         }
     }
 
     fn register_method(&mut self, input: &TraitItemFn) -> Result<()> {
         let function = &input.sig;
+        let name = function.ident.to_string();
+
+        let attrs = &input.attrs;
+        
 
         // TODO: modifers that we want but syn doesn't parse: final
 
@@ -312,13 +233,13 @@ impl InterfaceShape {
         }
 
         let kind = if is_async {
-            let modifier = query_attr_flag(&input.attrs, "outline")
+            let modifier = query_attr_flag(attrs, "outline")
                 .is_some()
                 .then_some(AsyncDispatchModifier::Outline)
                 .unwrap_or_default();
 
             // TODO: make this a modifier of modifier instead ( #[final(outline)] )
-            let is_final = query_attr_flag(&input.attrs, "dispatch_final");
+            let is_final = query_attr_flag(&input.attrs., "dispatch_final");
             FnKind::Async { dispatch }
         } else if is_const {
             FnKind::Const
@@ -326,9 +247,8 @@ impl InterfaceShape {
             FnKind::Regular
         };
 
-        let ident = function.ident.to_string();
-
-        self.methods.push((ident, kind));
+        self.methods_attr_map.insert(name, attrs.)
+        self.methods.push((name, kind));
 
         Ok(())
     }

@@ -1,9 +1,10 @@
 use std::marker::PhantomData;
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
+use serde::{Deserialize, Serialize};
 use syn::{
-    Attribute, Field, Ident, Meta, Token, Visibility,
+    Attribute, Ident, Meta, Token, Visibility,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
@@ -122,4 +123,32 @@ pub fn query_attr_flag<'a>(attrs: &'a Vec<Attribute>, flag: &str) -> Option<&'a 
                 // Ensure a bare flag
                 && matches!(attr.meta, Meta::Path(_))
     })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WithSpan<T> {
+    inner: T,
+    #[serde(skip)]
+    span: Option<Span>,
+}
+
+impl<T> WithSpan<T> {
+    fn new(value: T, span: Span) -> Self {
+        Self {
+            inner: value,
+            span: Some(span),
+        }
+    }
+
+    fn span(&self) -> Span {
+        self.span
+            .expect("Cannot rely on spans of values that have been passed thorugh metadata")
+    }
+}
+
+impl<T> std::ops::Deref for WithSpan<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
