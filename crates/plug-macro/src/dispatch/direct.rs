@@ -9,19 +9,21 @@ use syn::{
 };
 
 use crate::{
-    AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Many, Methods, Mode, bail,
-    purescope,
+    AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode, bail,
+    many::Many, purescope,
 };
 
-mod meta_passing {
-    use std::error::Error;
+pub mod meta_passing {
+    use std::{cell::RefCell, collections::HashMap, error::Error, sync::LazyLock};
 
     use base64::{Engine, engine::general_purpose::STANDARD as base64};
     use proc_macro2::TokenStream;
     use quote::{format_ident, quote};
     use serde::{Serialize, de::DeserializeOwned};
+    use syn::{Ident, Path, parse::Parse};
+    use syn_derive::{Parse, ToTokens};
 
-    use crate::utils::bail;
+    use crate::{Tokens, many::Many, utils::bail};
 
     fn encode<T: Serialize>(input: T) -> Result<String, Box<dyn Error>> {
         let data = minicbor_serde::to_vec(input)?;
@@ -48,13 +50,72 @@ mod meta_passing {
         let content = quote! {
             #[doc(hidden)]
             macro_rules! #ident {
-                ($($m:tt)*) => { $($m)*!(#data); };
+                ($($m:tt)*) => { plug::__import_advance!([#data], $($m)* ); };
             }
 
             pub(crate) use #ident;
         };
 
         Ok(content)
+    }
+
+    pub struct WithImported {
+        imported: Vec<TokenStream>,
+        inner: TokenStream,
+    }
+
+    impl WithImported {
+        fn unwrap_signature<T: Parse>(self) -> syn::Result<(T, Vec<TokenStream>)> {
+            let parsed = syn::parse2(self.inner)?;
+            Ok((parsed, self.imported))
+        }
+    }
+
+    type Callback = fn(WithImported) -> syn::Result<TokenStream>;
+    pub const CALLBACK_LOOKUP: LazyLock<RefCell<HashMap<Ident, Callback>>> =
+        LazyLock::new(|| RefCell::new(HashMap::new()));
+
+    #[derive(Parse, ToTokens)]
+    pub struct ImportChain {
+        got: Many<Tokens>,
+        remaining_sources: Many<Path>,
+        callback_token: Ident,
+        passed: Tokens,
+    }
+
+    impl ImportChain {
+        fn new(sources: Vec<Path>, callback_token: Ident, pass: TokenStream) -> Self {
+            Self {
+                got: Vec::new().into(),
+                remaining_sources: sources.into(),
+                callback_token,
+                passed: Tokens(pass),
+            }
+        }
+    }
+
+    pub fn import_advance(mut chain: ImportChain) -> syn::Result<TokenStream> {
+        if chain.remaining_sources.is_empty() {
+            let ImportChain {
+                got,
+                callback_token,
+                passed,
+                ..
+            } = chain;
+
+            let imported = got.inner.into_iter().map(|x| x.0).collect();
+            let inner = passed.0;
+
+            match CALLBACK_LOOKUP.borrow().get(&callback_token) {
+                Some(callback) => callback(WithImported { imported, inner }),
+                None => bail!(=> "undefined callback token"),
+            }
+        } else {
+            // unwrap is guarded by empty check above
+            let source = chain.remaining_sources.inner.pop().unwrap();
+
+            Ok(quote! { #source!(#chain) })
+        }
     }
 }
 
@@ -262,9 +323,18 @@ fn registered_module_object() -> Ident {
     format_ident!("__primary_object_for_this_module")
 }
 
+fn random_ident(prefix: &str) -> Result<Ident> {
+    let rand = match getrandom::u32() {
+        Ok(x) => x,
+        _ => bail!(=> "getrandom failed"),
+    };
+
+    Ok(format_ident!("{prefix}_{rand:x}"))
+}
+
 fn register_impl_inner(input: ItemImpl, meta: MetaForInterface) -> Result<TokenStream> {
     let (vis, ident) = match meta.mode {
-        Mode::Direct => (Visibility::Inherited, todo!("random ident")),
+        Mode::Direct => (Visibility::Inherited, random_ident("impl")?),
         Mode::FromMod => (parse_quote!(pub), registered_module_object()),
         Mode::Dynamic => todo!("whole different path here"),
     };

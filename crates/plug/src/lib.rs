@@ -1,11 +1,17 @@
 pub use plug_macro::plug;
 
-pub trait State {
+#[doc(hidden)]
+pub use plug_macro::__import_advance;
+
+pub trait Object {
+    type State;
     type Config;
+
+    const TAG: &str;
 }
 
 #[allow(async_fn_in_trait)]
-pub trait Init: State + Sized {
+pub trait Init: Object + Sized {
     type Error;
 
     async fn init(config: &Self::Config) -> Result<Self, Self::Error>;

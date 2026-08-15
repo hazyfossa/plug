@@ -1,8 +1,6 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::quote;
-use syn::{
-    Field, ItemStruct, Result, Type, Visibility, parse::Nothing, parse_quote, spanned::Spanned,
-};
+use syn::{Field, ItemStruct, Result, Type, Visibility, parse_quote, spanned::Spanned};
 
 use crate::{bail, purescope};
 
@@ -34,7 +32,11 @@ impl StateMatcher {
 }
 
 pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
-    let _: Nothing = syn::parse2(attrs)?; // TODO: tag
+    let tag: Option<Literal> = syn::parse2(attrs)?;
+
+    let tag = tag
+        .map(|x| x.to_string())
+        .unwrap_or(input.ident.to_string());
 
     let mut config: Vec<Field> = Vec::new();
     let mut state: Vec<Field> = Vec::new();
@@ -71,8 +73,14 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
             #(#state,)*
         }
 
-        impl ::plug::State for State {
+        #[doc(hidden)]
+        pub struct T;
+
+        impl ::plug::Object for T {
             type Config = Config;
+            type State = State;
+
+            const TAG: &str = #tag;
         }
     };
 

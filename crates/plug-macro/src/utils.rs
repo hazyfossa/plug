@@ -27,24 +27,20 @@ impl MacroReturn for TokenStream {
     }
 }
 
-// TODO: auto-define version for tests (syn::parse2)
-// TODO: infallible macros (no flatten)
+// TODO: expose proc_macro2 version
 macro_rules! define {
-    ($(#[$($attr:tt)+])* $name:ident = $impl:ident) => {
+    (@impl $kind:ident; $(#[$($attr:tt)+])* $name:ident = $impl:path; $($arg:ident),+) => {
+        define!(@attr $kind $name
         $(#[$($attr)+])*
-        #[proc_macro_attribute]
-        pub fn $name(
-            attrs: proc_macro::TokenStream,
-            input: proc_macro::TokenStream,
-        ) -> proc_macro::TokenStream {
-            let predicate = |a,b| {
-                let a = syn::parse(a)?;
-                let b = syn::parse(b)?;
-                Ok((a, b))
+        pub fn $name($($arg: proc_macro::TokenStream),+) -> proc_macro::TokenStream {
+            let predicate = |$($arg: proc_macro::TokenStream),+| {
+                $(let $arg = syn::parse($arg)?;)+
+                Ok(($($arg),+))
             };
 
-            let ret = predicate(attrs.into(), input.into())
-                .map(|(a,b)| $impl(a, b))
+            #[allow(unused_parens)]
+            let ret = predicate($($arg.into()),+)
+                .map(|($($arg),+)| $impl($($arg),+))
                 .map($crate::MacroReturn::into_syn_result)
                 .flatten();
 
@@ -52,7 +48,19 @@ macro_rules! define {
                 Ok(tokens) => tokens.into(),
                 Err(e) => e.to_compile_error().into(),
             }
-        }
+        });
+    };
+
+    (@attr attribute  $name:ident $($body:tt)*)  => { #[proc_macro_attribute]     $($body)*};
+    (@attr derive     $name:ident $($body:tt)*)  => { #[proc_macro_derive($name)] $($body)*};
+    (@attr fn_like    $name:ident $($body:tt)*)  => { #[proc_macro]               $($body)*};
+
+    (attribute $($tt:tt)*) => {
+        define!(@impl attribute; $($tt)*; attrs, input);
+    };
+
+    ($other_kind:tt $($tt:tt)*) => {
+        define!(@impl $other_kind; $($tt)*; input);
     };
 }
 pub(crate) use define;
@@ -89,33 +97,76 @@ pub fn purescope(vis: Visibility, ident: Ident, content: TokenStream) -> TokenSt
     }
 }
 
-pub struct Many<T, C = Vec<T>> {
-    pub inner: C,
-    _phantom: PhantomData<T>,
-}
+pub mod many {
+    use std::ops::Deref;
 
-impl<T, C: FromIterator<T>> FromIterator<T> for Many<T, C> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self {
-            inner: iter.into_iter().collect(),
-            _phantom: PhantomData,
+    use super::*;
+
+    pub struct Many<T, C = Vec<T>> {
+        pub inner: C,
+        _phantom: PhantomData<T>,
+    }
+
+    impl<T, C> From<C> for Many<T, C> {
+        fn from(value: C) -> Self {
+            Self {
+                inner: value,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T, C: FromIterator<T>> FromIterator<T> for Many<T, C> {
+        fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+            let collection = iter.into_iter().collect::<C>();
+            Self::from(collection)
+        }
+    }
+
+    impl<T: Parse, C: FromIterator<T>> Parse for Many<T, C> {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            Punctuated::<T, Token![,]>::parse_terminated(input).map(|x| x.into_iter().collect())
+        }
+    }
+
+    impl<T, C> ToTokens for Many<T, C>
+    where
+        T: ToTokens,
+        for<'a> &'a C: IntoIterator<Item = &'a T>,
+    {
+        fn to_tokens(&self, tokens: &mut TokenStream) {
+            tokens.append_terminated(&self.inner, syn::token::Comma::default());
+        }
+    }
+
+    impl<T, C> Deref for Many<T, C> {
+        type Target = C;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
         }
     }
 }
 
-impl<T: Parse, C: FromIterator<T>> Parse for Many<T, C> {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Punctuated::<T, Token![,]>::parse_terminated(input).map(|x| x.into_iter().collect())
+pub struct Tokens(pub TokenStream);
+
+impl Parse for Tokens {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let content;
+        syn::bracketed!(content in input);
+        content.parse().map(Self)
     }
 }
 
-impl<T, C> ToTokens for Many<T, C>
-where
-    T: ToTokens,
-    for<'a> &'a C: IntoIterator<Item = &'a T>,
-{
+impl ToTokens for Tokens {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.append_terminated(&self.inner, syn::token::Comma::default());
+        tokens.append_all(self.0.clone());
+    }
+
+    fn into_token_stream(self) -> TokenStream
+    where
+        Self: Sized,
+    {
+        self.0
     }
 }
 
