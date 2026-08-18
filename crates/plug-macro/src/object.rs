@@ -1,8 +1,8 @@
 use proc_macro2::{Literal, TokenStream};
-use quote::quote;
-use syn::{Field, ItemStruct, Result, Type, Visibility, parse_quote, spanned::Spanned};
+use quote::{format_ident, quote};
+use syn::{Field, ItemStruct, Result, Type, spanned::Spanned};
 
-use crate::{bail, purescope};
+use crate::bail;
 
 struct StateMatcher {
     passed_marker: bool,
@@ -43,25 +43,27 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
 
     let mut state_matcher = StateMatcher::new();
 
-    for mut field in input.fields {
+    for field in input.fields {
         let target = match state_matcher.is_state(&field)? {
             Some(true) => &mut state,
             Some(false) => &mut config,
             None => continue,
         };
 
-        if matches!(field.vis, Visibility::Inherited) {
-            field.vis = parse_quote! { pub(super) }
-        };
+        // if matches!(field.vis, Visibility::Inherited) {
+        //     field.vis = parse_quote! { pub(super) }
+        // };
 
         target.push(field);
     }
 
     let attrs = input.attrs;
+    let name = input.ident;
+    let config_ident = format_ident!("{name}Config");
 
     let content = quote! {
         #(#attrs)*
-        pub struct Config {
+        pub struct #config_ident {
             #(#config,)*
         }
 
@@ -69,20 +71,15 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
         //
         // TODO: make Borrow<Config> part of self
         // (combined with self-ref allows borrow from Config)
-        pub struct State {
+        pub struct #name {
             #(#state,)*
         }
 
-        #[doc(hidden)]
-        pub struct T;
-
-        impl ::plug::Object for T {
-            type Config = Config;
-            type State = State;
-
+        impl ::plug::Object for #name {
+            type Config = #config_ident;
             const TAG: &str = #tag;
         }
     };
 
-    Ok(purescope(input.vis, input.ident, content))
+    Ok(content)
 }

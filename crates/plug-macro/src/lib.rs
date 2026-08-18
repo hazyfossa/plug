@@ -212,7 +212,14 @@ fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
         None => bail!(=> "This macro only makes sense for interface implementations"),
     };
 
-    let object = input.self_ty;
+    // NOTE: the following code does not actually check if the path resolves to a thing
+    // that implements "plug::Object". It only saves downstream code from working with
+    // obviously wrong inputs (since, for example, plug::Object will surely never be
+    // implemented for a slice or tuple)
+    let object = match *input.self_ty {
+        Type::Path(x) => x.path,
+        other => bail!(other => "Interfaces can only be implemented on objects"),
+    };
 
     ensure_empty!(
         input.generics.params,

@@ -1,4 +1,4 @@
-use plug::{Init, plug};
+use plug::plug;
 
 #[plug]
 // TODO (cfg derives) #[derive(Default)]
@@ -11,7 +11,7 @@ struct TestObject {
     c: u32,
 }
 
-#[plug(TestObject)]
+#[plug]
 trait Test {
     fn test(&self) -> bool;
 }

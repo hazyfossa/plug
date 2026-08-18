@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
-    FnArg, Ident, ItemImpl, Pat, Path, Result, Signature, Token, Type, Visibility,
+    FnArg, Ident, Pat, Path, Result, Signature, Token, Type, Visibility,
     parse::{Parse, ParseStream},
     parse_quote,
     spanned::Spanned,
@@ -10,25 +10,26 @@ use syn::{
 
 use crate::{
     AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode, bail,
-    dispatch::direct::meta_passing::RawImport, many::Many, meta_passing::with_import, purescope,
-    token,
+    many::Many, meta_passing::with_import, path_ident, path_ident_mut, purescope, token,
 };
 
 pub mod meta_passing {
-    use std::{cell::RefCell, collections::HashMap, error::Error, sync::LazyLock};
+    use std::{
+        collections::HashMap,
+        error::Error,
+        sync::{LazyLock, RwLock},
+    };
 
     use base64::{Engine, engine::general_purpose::STANDARD as base64};
     use proc_macro2::TokenStream;
     use quote::{ToTokens, format_ident, quote};
     use serde::{Serialize, de::DeserializeOwned};
-    use syn::{Ident, LitStr, Path};
+    use syn::{LitStr, Path, Result, parse_quote};
     use syn_derive::{Parse, ToTokens};
 
-    use crate::{
-        MacroReturn, Tokens, amyhow, dispatch::direct::random_ident, many::Many, utils::bail,
-    };
+    use crate::{Tokens, amyhow, dispatch::direct::random_string, many::Many, utils::bail};
 
-    fn encode<T: Serialize>(input: T) -> syn::Result<TokenStream> {
+    fn encode<T: Serialize>(input: T) -> Result<TokenStream> {
         let data =
             minicbor_serde::to_vec(input).map_err(|e| amyhow!(=> "failed to encode: {e}"))?;
 
@@ -38,10 +39,10 @@ pub mod meta_passing {
         Ok(data)
     }
 
-    fn decode<T: DeserializeOwned>(input: TokenStream) -> syn::Result<T> {
+    fn decode<T: DeserializeOwned>(input: TokenStream) -> Result<T> {
         let str = syn::parse2::<LitStr>(input)?;
 
-        let ret: Result<T, Box<dyn Error>> = (|| {
+        let ret: std::result::Result<T, Box<dyn Error>> = (|| {
             let data = base64.decode(str.value())?;
             let data = minicbor_serde::from_slice(&data)?;
             Ok(data)
@@ -50,7 +51,7 @@ pub mod meta_passing {
         ret.map_err(|e| amyhow!(=> "failed to decode: {e}"))
     }
 
-    pub fn export<T: Serialize>(marker: &str, input: T) -> syn::Result<TokenStream> {
+    pub fn export<T: Serialize>(marker: &str, input: T) -> Result<TokenStream> {
         let ident = format_ident!("{marker}");
 
         let data = encode(input)?;
@@ -77,45 +78,72 @@ pub mod meta_passing {
     impl RawImport {
         pub fn decode<Aux: DeserializeOwned, Imp: DeserializeOwned>(
             self,
-        ) -> syn::Result<(Aux, Vec<Imp>)> {
+        ) -> Result<(Aux, Vec<Imp>)> {
             let aux = decode(self.aux)?;
 
             let imported = self
                 .imported
                 .into_iter()
                 .map(decode::<Imp>)
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_>>()?;
 
             Ok((aux, imported))
         }
     }
 
-    // TODO: the whole thing, including WithImported, can be replaced with erased-serde (dyn)
-    type Callback = fn(RawImport) -> syn::Result<TokenStream>;
-    pub const CALLBACK_LOOKUP: LazyLock<RefCell<HashMap<Ident, Callback>>> =
-        LazyLock::new(|| RefCell::new(HashMap::new()));
+    // TODO: this could be linktime...
+    type Callback = fn(RawImport) -> Result<TokenStream>;
+    type CallbackToken = String;
+
+    struct CallbackRegistry {
+        inner: RwLock<HashMap<CallbackToken, Callback>>,
+    }
+
+    impl CallbackRegistry {
+        fn new() -> Self {
+            Self {
+                inner: RwLock::new(HashMap::new()),
+            }
+        }
+
+        fn register_callback(&self, f: Callback) -> Result<CallbackToken> {
+            let token = random_string()?;
+            self.inner.write().unwrap().insert(token.clone(), f);
+            Ok(token)
+        }
+
+        fn get_callback(&self, token: CallbackToken) -> Result<Callback> {
+            match self.inner.read().unwrap().get(&token) {
+                Some(x) => Ok(*x),
+                None => bail!(=> "undefined callback token: {token}"),
+            }
+        }
+    }
+
+    #[allow(private_interfaces)]
+    pub static CB: LazyLock<CallbackRegistry> = LazyLock::new(|| CallbackRegistry::new());
 
     #[derive(Parse, ToTokens)]
     pub struct ImportChain {
         got: Many<Tokens>,
         remaining_sources: Many<Path>,
-        callback_token: Ident,
+        callback_token: LitStr,
         passed: Tokens,
     }
 
     impl ImportChain {
-        fn new(sources: Vec<Path>, callback_token: Ident, pass: TokenStream) -> Self {
+        fn new(sources: Vec<Path>, callback_token: CallbackToken, pass: TokenStream) -> Self {
             Self {
                 got: Vec::new().into(),
                 remaining_sources: sources.into(),
-                callback_token,
+                callback_token: parse_quote!(#callback_token),
                 passed: Tokens(pass),
             }
         }
     }
 
     // TODO: non-empty case can be outlined as declarative macro
-    pub fn import_advance(mut chain: ImportChain) -> syn::Result<TokenStream> {
+    pub fn import_advance(mut chain: ImportChain) -> Result<TokenStream> {
         if chain.remaining_sources.is_empty() {
             let ImportChain {
                 got,
@@ -127,13 +155,12 @@ pub mod meta_passing {
             let imported = got.inner.into_iter().map(|x| x.0).collect();
             let inner = passed.0;
 
-            match CALLBACK_LOOKUP.borrow().get(&callback_token) {
-                Some(callback) => callback(RawImport {
-                    imported,
-                    aux: inner,
-                }),
-                None => bail!(=> "undefined callback token"),
-            }
+            let callback = CB.get_callback(callback_token.value())?;
+
+            callback(RawImport {
+                imported,
+                aux: inner,
+            })
         } else {
             // unwrap is guarded by empty check above
             let source = chain.remaining_sources.inner.pop().unwrap();
@@ -143,15 +170,16 @@ pub mod meta_passing {
     }
 
     pub fn import<Aux: Serialize>(
-        sources: Vec<Path>,
+        sources: impl IntoIterator<Item = Path>,
         aux: Aux,
         callback: Callback,
-    ) -> syn::Result<TokenStream> {
-        let token = random_ident("callback")?;
-        CALLBACK_LOOKUP.borrow_mut().insert(token.clone(), callback);
+    ) -> Result<TokenStream> {
+        let token = CB.register_callback(callback)?;
 
+        let sources = sources.into_iter().collect();
         let pass = encode(aux)?;
         let chain = ImportChain::new(sources, token, pass);
+
         import_advance(chain)
     }
 
@@ -282,7 +310,7 @@ impl Method {
             false => quote! { => },
         };
 
-        quote! { #($receive_state)? #name( #(#args)* ) #(r#await)? }
+        quote! { #(#receive_state)? #name( #(#args)* ) #(#r#await)? }
     }
 }
 
@@ -353,8 +381,8 @@ fn resolve_and_dispatch(attrs: ParsedAttrs, shape: &InterfaceShape) -> Result<To
     for path in &mut paths {
         match attrs.mode {
             Mode::Direct => {
-                let last = path.segments.last_mut().expect("requires non-empty path");
-                *last = direct_impl_token(interface_name, &last.ident).into();
+                let last = path_ident_mut(path)?;
+                *last = direct_impl_token(interface_name, &last).into();
             }
             Mode::FromMod => {
                 let query = registered_object_token();
@@ -424,9 +452,30 @@ impl super::Dispatch for Impl {
         Ok(content)
     }
 
-    fn register_impl(target_interface: Path, object: Box<Type>) -> Result<TokenStream> {
-        todo!()
+    fn register_impl(mut target_interface: Path, object: Path) -> Result<TokenStream> {
+        let interface_name = path_ident(&target_interface)?.to_string();
+
+        // TODO: actually test remote impls (and maybe relax this)
+        let object_name = object.require_ident()?.to_string();
+
+        let meta = ();
+
+        let args = Args {
+            interface_name,
+            object_name,
+            as_implemented: meta,
+        };
+
+        *path_ident_mut(&mut target_interface)? = interface_meta_token(interface_name);
+        let source = target_interface;
+        let source = [source];
+
+        with_import!(source => |args, as_defined| { register_impl_inner(args, as_defined) })
     }
+}
+
+fn interface_meta_token(interface_name: impl std::fmt::Display) -> Ident {
+    format_ident!("__{interface_name}_meta")
 }
 
 fn registered_object_token() -> Ident {
@@ -440,29 +489,36 @@ fn direct_impl_token(
     format_ident!("{object_name}_implements_{interface_name}")
 }
 
-fn random_ident(prefix: &str) -> Result<Ident> {
+fn random_string() -> Result<String> {
     let rand = match getrandom::u32() {
         Ok(x) => x,
         _ => bail!(=> "getrandom failed"),
     };
 
-    Ok(format_ident!("{prefix}_{rand:x}"))
+    Ok(format!("{rand:x}"))
 }
 
-fn register_impl_inner(
+#[derive(Serialize, Deserialize)]
+struct Args {
+    as_implemented: MetaForImpl,
     interface_name: String,
     object_name: String,
-    meta: MetaForInterface,
-) -> Result<TokenStream> {
-    let (vis, ident) = match meta.mode {
+}
+
+fn register_impl_inner(args: Args, as_defined: Vec<MetaForInterface>) -> Result<TokenStream> {
+    let as_defined = &as_defined[0]; // TODO: common case: import of one
+
+    let (vis, ident) = match as_defined.mode {
         Mode::Direct => (
             Visibility::Inherited,
-            direct_impl_token(interface_name, object_name),
+            direct_impl_token(args.interface_name, args.object_name),
         ),
         Mode::FromMod => (parse_quote!(pub), registered_object_token()),
         Mode::Dynamic => todo!("whole different path here"),
     };
 
-    let meta = meta_passing::export("meta", ())?; // TODO
-    Ok(purescope(vis, ident, meta.into_token_stream()))
+    let export_meta = meta_passing::export("meta", ())?; // TODO
+
+    // TODO: consider running without purescope
+    Ok(purescope(vis, ident, export_meta.into_token_stream()))
 }

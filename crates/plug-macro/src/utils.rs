@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
-    Attribute, Ident, Meta, Result, Token, Visibility,
+    Attribute, Ident, Meta, Path, Result, Token, Visibility,
     parse::{Parse, ParseStream},
     parse_quote,
     punctuated::Punctuated,
@@ -323,3 +323,21 @@ macro_rules! token {
     };
 }
 pub(crate) use token;
+
+pub fn path_ident(path: &Path) -> Result<&Ident> {
+    match path.segments.last() {
+        Some(x) => Ok(&x.ident),
+        None => bail!(path => "expected non-empty path"),
+    }
+}
+
+// TODO: reconsider this as a pattern
+// better written as replace_path_ident which makes a clone
+pub fn path_ident_mut(path: &mut Path) -> Result<&mut Ident> {
+    let span = path.span(); // This is purely for for borrowck happiness
+
+    match path.segments.last_mut() {
+        Some(x) => Ok(&mut x.ident),
+        None => bail!(span => "expected non-empty path"),
+    }
+}

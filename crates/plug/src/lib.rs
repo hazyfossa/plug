@@ -5,9 +5,7 @@ pub use plug_macro::plug;
 pub use plug_macro::__import_advance;
 
 pub trait Object {
-    type State;
     type Config;
-
     const TAG: &str;
 }
 
