@@ -1,10 +1,5 @@
 use plug::{Init, plug};
 
-#[plug(TestObject::State)]
-trait Test {
-    fn test(&self) -> bool;
-}
-
 #[plug]
 // TODO (cfg derives) #[derive(Default)]
 struct TestObject {
@@ -14,6 +9,11 @@ struct TestObject {
     state: !,
 
     c: u32,
+}
+
+#[plug(TestObject)]
+trait Test {
+    fn test(&self) -> bool;
 }
 
 // impl Init for TestObject::State {

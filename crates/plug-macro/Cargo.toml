@@ -16,6 +16,7 @@ base64 = { version = "0.23", optional = true }
 minicbor-serde = { version = "0.7", features = ["std"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 getrandom = { version = "0.4.3", features = ["std"], optional = true }
+serde_tokenstream = "0.3.0"
 
 [features]
 direct = ["dep:serde", "dep:minicbor-serde", "dep:base64", "dep:getrandom"]

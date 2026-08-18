@@ -65,15 +65,22 @@ macro_rules! define {
 }
 pub(crate) use define;
 
-macro_rules! bail {
+macro_rules! amyhow {
     (@span $tokens:expr) => { $tokens.span() };
     (@span) => { proc_macro2::Span::call_site() };
 
     ($($tokens:expr)? => $($fmt:tt)*) => {
-        return Err(syn::Error::new(
-            $crate::bail!(@span $($tokens)?),
+        syn::Error::new(
+            $crate::amyhow!(@span $($tokens)?),
             format!($($fmt)*)
-        ))
+        )
+    };
+}
+pub(crate) use amyhow;
+
+macro_rules! bail {
+    ($($tt:tt)*) => {
+        return Err($crate::amyhow!($($tt)*))
     };
 }
 pub(crate) use bail;
@@ -171,6 +178,7 @@ impl ToTokens for Tokens {
 }
 
 // Generic span monad
+#[derive(Clone)]
 #[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
 pub struct WithSpan<T> {
     inner: T,
@@ -308,3 +316,10 @@ pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
     // Compiler should eliminate unwraps with the assert above
     values.retain(|_| *iter.next().unwrap());
 }
+
+macro_rules! token {
+    ($($tt:tt)*) => {
+        syn::Token![$($tt)*](proc_macro2::Span::call_site())
+    };
+}
+pub(crate) use token;

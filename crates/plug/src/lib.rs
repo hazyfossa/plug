@@ -1,5 +1,6 @@
 pub use plug_macro::plug;
 
+#[cfg(feature = "direct-dispatch")]
 #[doc(hidden)]
 pub use plug_macro::__import_advance;
 

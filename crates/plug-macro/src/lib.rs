@@ -41,7 +41,11 @@ use dispatch::Dispatch;
 const NAME: &str = "plug";
 
 define!(attribute plug = plug_impl);
-define!(fn_like #[doc(hidden)] __import_advance = dispatch::direct::meta_passing::import_advance);
+
+#[cfg(feature = "direct")]
+pub(crate) use dispatch::direct::meta_passing;
+#[cfg(feature = "direct")]
+define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
 
 #[derive(Parse)]
 enum Code {
@@ -85,12 +89,14 @@ impl Default for AsyncDispatchKind {
     }
 }
 
+#[derive(Clone)]
 #[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
 struct AsyncDispatchModifier {
     kind: AsyncDispatchKind,
     is_final: bool,
 }
 
+#[derive(Clone)]
 #[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
 enum FnKind {
     Regular,
