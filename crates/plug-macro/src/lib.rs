@@ -43,7 +43,7 @@ const NAME: &str = "plug";
 define!(attribute plug = plug_impl);
 
 #[cfg(feature = "direct")]
-pub(crate) use dispatch::direct::meta_passing;
+pub(crate) mod meta_passing;
 #[cfg(feature = "direct")]
 define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
 
@@ -226,5 +226,5 @@ fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
         "Generic interfaces are not supported (yet)"
     );
 
-    dispatch::Impl::register_impl(interface, object)
+    dispatch::Impl::register_impl(interface, object, input.items)
 }

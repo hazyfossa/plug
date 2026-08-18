@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use syn::{Path, Result, Type};
+use syn::{ImplItem, Path, Result};
 
 pub struct Impl;
 
@@ -8,7 +8,11 @@ impl super::Dispatch for Impl {
         todo!()
     }
 
-    fn register_impl(target_interface: Path, object: Box<Type>) -> Result<TokenStream> {
+    fn register_impl(
+        target_interface: Path,
+        object: Path,
+        _body: Vec<ImplItem>,
+    ) -> Result<TokenStream> {
         todo!()
     }
 }

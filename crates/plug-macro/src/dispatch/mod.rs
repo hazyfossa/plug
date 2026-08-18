@@ -1,17 +1,20 @@
 use proc_macro2::TokenStream;
-use syn::{Path, Result};
+use syn::{ImplItem, Path, Result};
 
 use crate::InterfaceShape;
 
 #[cfg(feature = "direct")]
 pub mod direct;
 
-pub mod common;
 pub mod dynamic;
 
 pub trait Dispatch {
     fn dispatch(attrs: TokenStream, shape: InterfaceShape) -> Result<TokenStream>;
-    fn register_impl(target_interface: Path, object: Path) -> Result<TokenStream>;
+    fn register_impl(
+        target_interface: Path,
+        object: Path,
+        body: Vec<ImplItem>,
+    ) -> Result<TokenStream>;
 }
 
 #[cfg(feature = "direct")]
