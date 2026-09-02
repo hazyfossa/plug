@@ -52,7 +52,7 @@ pub fn export<T: Serialize>(marker: &str, input: T) -> Result<TokenStream> {
         #[doc(hidden)]
         macro_rules! #ident {
             ($($m:tt)*) => {
-                plug::__import_advance!([#data], $($m)* );
+                ::plug_macro::__import_advance!([#data], $($m)* );
             };
         }
 

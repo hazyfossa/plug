@@ -85,14 +85,14 @@ macro_rules! bail {
 }
 pub(crate) use bail;
 
-macro_rules! ensure_empty {
+macro_rules! ensure_empty_tokens {
     ($tokens:expr, $($err:tt)*) => {
         if !$tokens.is_empty() {
             bail!($tokens => $($err)*);
         }
     };
 }
-pub(crate) use ensure_empty;
+pub(crate) use ensure_empty_tokens;
 
 pub fn purescope(vis: Visibility, ident: Ident, content: TokenStream) -> TokenStream {
     quote! {
@@ -178,12 +178,11 @@ impl ToTokens for Tokens {
 }
 
 // Generic span monad
-#[derive(Clone)]
-#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WithSpan<T> {
     inner: T,
 
-    #[cfg_attr(feature = "direct", serde(skip))]
+    #[cfg_attr(feature = "meta-passing", serde(skip))]
     span: Option<Span>,
 }
 

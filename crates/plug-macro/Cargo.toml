@@ -24,4 +24,4 @@ meta-passing = [
     "dep:base64",
     "dep:getrandom",
 ]
-direct = ["meta-passing"]
+default = ["meta-passing"]

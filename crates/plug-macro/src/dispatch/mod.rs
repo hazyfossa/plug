@@ -3,7 +3,7 @@ use syn::{ImplItem, Path, Result};
 
 use crate::InterfaceShape;
 
-#[cfg(feature = "direct")]
+#[cfg(feature = "meta-passing")]
 pub mod direct;
 
 pub mod dynamic;
@@ -17,8 +17,8 @@ pub trait Dispatch {
     ) -> Result<TokenStream>;
 }
 
-#[cfg(feature = "direct")]
+#[cfg(feature = "meta-passing")]
 pub type Impl = direct::Impl;
 
-#[cfg(not(feature = "direct"))]
+#[cfg(not(feature = "meta-passing"))]
 pub type Impl = dynamic::Impl;

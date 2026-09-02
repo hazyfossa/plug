@@ -42,10 +42,15 @@ const NAME: &str = "plug";
 
 define!(attribute plug = plug_impl);
 
-#[cfg(feature = "direct")]
+#[cfg(feature = "meta-passing")]
 pub(crate) mod meta_passing;
-#[cfg(feature = "direct")]
+#[cfg(feature = "meta-passing")]
 define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
+
+#[cfg(not(feature = "meta-passing"))]
+compile_error!(
+    "Plug currently always requires full meta passing. This may be relaxed in the future"
+);
 
 #[derive(Parse)]
 enum Code {
@@ -76,7 +81,7 @@ enum Mode {
 }
 
 tokenum! {
-#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 #[derive(Clone, Copy)]
 enum AsyncDispatchKind {
     Inline,
@@ -89,15 +94,13 @@ impl Default for AsyncDispatchKind {
     }
 }
 
-#[derive(Clone)]
-#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+#[derive(Clone, Serialize, Deserialize)]
 struct AsyncDispatchModifier {
     kind: AsyncDispatchKind,
     is_final: bool,
 }
 
-#[derive(Clone)]
-#[cfg_attr(feature = "direct", derive(Serialize, Deserialize))]
+#[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
     Regular,
     Async {
@@ -125,6 +128,7 @@ impl InterfaceShape {
         }
     }
 
+    // Returns whether the method is implementable
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
         let mut attrs = Attrs::extract(&mut input.attrs)?;
 
@@ -138,6 +142,7 @@ impl InterfaceShape {
         let name = function.ident.to_string();
 
         // TODO: modifers that we want but syn doesn't parse: final
+        // for now, we substitute via custom attr
 
         let is_async = function.asyncness.is_some();
         let is_const = function.constness.is_some();
@@ -149,11 +154,11 @@ impl InterfaceShape {
         let kind = if is_async {
             let dispatch = attrs
                 .pull_tokenum::<AsyncDispatchKind>()?
-                // TODO parse finality of dispatch
+                // TODO: non-final dispatch
                 .map(|kind| {
                     kind.map(|x| AsyncDispatchModifier {
                         kind: x,
-                        is_final: false,
+                        is_final: true,
                     })
                 });
 
@@ -193,7 +198,7 @@ impl InterfaceShape {
 }
 
 fn trait_to_interface(attrs: TokenStream, mut input: ItemTrait) -> Result<TokenStream> {
-    ensure_empty!(
+    ensure_empty_tokens!(
         input.generics.params,
         "Generic interfaces are not supported (yet)"
     );
@@ -221,7 +226,7 @@ fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
         other => bail!(other => "Interfaces can only be implemented on objects"),
     };
 
-    ensure_empty!(
+    ensure_empty_tokens!(
         input.generics.params,
         "Generic interfaces are not supported (yet)"
     );

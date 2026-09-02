@@ -281,7 +281,7 @@ impl super::Dispatch for Impl {
         // TODO: actually test remote impls (and maybe relax this)
         let object_name = object.require_ident()?.to_string();
 
-        let meta = ();
+        let meta = todo!();
 
         let args = Args {
             interface_name,
