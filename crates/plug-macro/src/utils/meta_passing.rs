@@ -11,7 +11,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use syn::{LitStr, Path, Result, parse_quote};
 use syn_derive::{Parse, ToTokens};
 
-use crate::{Tokens, amyhow, bail, many::Many};
+use crate::{
+    amyhow, bail,
+    parse::{Many, Tokens},
+};
 
 fn random_string() -> Result<String> {
     let rand = match getrandom::u32() {

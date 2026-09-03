@@ -22,31 +22,22 @@
 // Based on that, enforce invariants at impl time, which helps with dispatch somewhat
 
 use proc_macro2::TokenStream;
-use serde::{Deserialize, Serialize};
-use syn::{
-    parse::{Nothing, ParseStream},
-    spanned::Spanned,
-    *,
-};
-use syn_derive::{Parse, ToTokens};
+use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token, parse::Parse};
+use syn_derive::Parse;
 
+mod impls;
+mod interface;
 mod object;
 
 mod utils;
 use utils::*;
-
-mod dispatch;
-use dispatch::Dispatch;
 
 const NAME: &str = "plug";
 
 define!(attribute plug = plug_impl);
 
 #[cfg(feature = "meta-passing")]
-pub(crate) mod meta_passing;
-#[cfg(feature = "meta-passing")]
 define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
-
 #[cfg(not(feature = "meta-passing"))]
 compile_error!(
     "Plug currently always requires full meta passing. This may be relaxed in the future"
@@ -62,174 +53,11 @@ enum Code {
     Impl(ItemImpl),
 }
 
+#[rustfmt::skip]
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
-        Code::Trait(x) => trait_to_interface(attrs, x),
-        Code::Struct(x) => object::struct_to_object(attrs, x),
-        Code::Impl(x) => register_impl(attrs, x),
+        Code::Trait(x)  => interface::trait_to_interface (syn::parse2(attrs)?, x),
+        Code::Struct(x) => object::struct_to_object      (syn::parse2(attrs)?, x),
+        Code::Impl(x)   => impls::register_impl          (syn::parse2(attrs)?, x),
     }
-}
-
-#[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
-enum Mode {
-    #[parse(peek = Token![mod])]
-    FromMod,
-    #[parse(peek = Token![dyn])]
-    Dynamic,
-
-    Direct,
-}
-
-tokenum! {
-#[derive(Serialize, Deserialize)]
-#[derive(Clone, Copy)]
-enum AsyncDispatchKind {
-    Inline,
-    Outline,
-}}
-
-impl Default for AsyncDispatchKind {
-    fn default() -> Self {
-        Self::Inline
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct AsyncDispatchModifier {
-    kind: AsyncDispatchKind,
-    is_final: bool,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-enum FnKind {
-    Regular,
-    Async {
-        dispatch: Option<WithSpan<AsyncDispatchModifier>>,
-    },
-    Const,
-}
-
-type FunctionIdent = String;
-type Methods = Vec<(FunctionIdent, FnKind)>;
-
-struct InterfaceShape {
-    ident: Ident,
-    methods: Methods,
-    // TODO: const, types
-    final_method_impls: Vec<TraitItemFn>,
-}
-
-impl InterfaceShape {
-    fn new(ident: Ident) -> Self {
-        Self {
-            ident,
-            methods: Vec::new(),
-            final_method_impls: Vec::new(),
-        }
-    }
-
-    // Returns whether the method is implementable
-    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
-        let mut attrs = Attrs::extract(&mut input.attrs)?;
-
-        let is_final = attrs.pull(["final"])?.is_some();
-        if is_final {
-            self.final_method_impls.push(input.clone());
-            return Ok(false);
-        }
-
-        let function = &input.sig;
-        let name = function.ident.to_string();
-
-        // TODO: modifers that we want but syn doesn't parse: final
-        // for now, we substitute via custom attr
-
-        let is_async = function.asyncness.is_some();
-        let is_const = function.constness.is_some();
-
-        if is_async && is_const {
-            bail!(function.constness => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            let dispatch = attrs
-                .pull_tokenum::<AsyncDispatchKind>()?
-                // TODO: non-final dispatch
-                .map(|kind| {
-                    kind.map(|x| AsyncDispatchModifier {
-                        kind: x,
-                        is_final: true,
-                    })
-                });
-
-            FnKind::Async { dispatch }
-        } else if is_const {
-            FnKind::Const
-        } else {
-            FnKind::Regular
-        };
-
-        self.methods.push((name, kind));
-
-        Ok(true)
-    }
-
-    // This will split the stuff `plug` manages internally
-    // and leave the trait as suitable for IDE hints on impl
-    fn from_trait(input: &mut ItemTrait) -> Result<Self> {
-        let mut this = Self::new(input.ident.clone());
-
-        let mut ret = Vec::new();
-
-        for item in input.items.iter_mut() {
-            match item {
-                TraitItem::Fn(f) => ret.push(this.register_method(f)?),
-                TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
-                TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
-                TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
-                x => bail!(x => "This syntax is not supported inside interfaces"),
-            }
-        }
-
-        retain_by_mask(&ret, &mut input.items);
-
-        Ok(this)
-    }
-}
-
-fn trait_to_interface(attrs: TokenStream, mut input: ItemTrait) -> Result<TokenStream> {
-    ensure_empty_tokens!(
-        input.generics.params,
-        "Generic interfaces are not supported (yet)"
-    );
-
-    let shape = InterfaceShape::from_trait(&mut input)?;
-    let content = dispatch::Impl::dispatch(attrs, shape)?;
-
-    Ok(purescope(input.vis, input.ident, content))
-}
-
-fn register_impl(attrs: TokenStream, input: ItemImpl) -> Result<TokenStream> {
-    let _: Nothing = syn::parse2(attrs)?;
-
-    let interface = match input.trait_ {
-        Some((path, _)) => path,
-        None => bail!(=> "This macro only makes sense for interface implementations"),
-    };
-
-    // NOTE: the following code does not actually check if the path resolves to a thing
-    // that implements "plug::Object". It only saves downstream code from working with
-    // obviously wrong inputs (since, for example, plug::Object will surely never be
-    // implemented for a slice or tuple)
-    let object = match *input.self_ty {
-        Type::Path(x) => x.path,
-        other => bail!(other => "Interfaces can only be implemented on objects"),
-    };
-
-    ensure_empty_tokens!(
-        input.generics.params,
-        "Generic interfaces are not supported (yet)"
-    );
-
-    dispatch::Impl::register_impl(interface, object, input.items)
 }

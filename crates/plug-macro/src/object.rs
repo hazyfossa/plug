@@ -32,7 +32,7 @@ impl StateMatcher {
 }
 
 pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
-    let tag: Option<Literal> = syn::parse2(attrs)?;
+    let tag: Option<Literal> = syn::parse2(attrs)?; // TODO
 
     let tag = tag
         .map(|x| x.to_string())
@@ -49,10 +49,6 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
             Some(false) => &mut config,
             None => continue,
         };
-
-        // if matches!(field.vis, Visibility::Inherited) {
-        //     field.vis = parse_quote! { pub(super) }
-        // };
 
         target.push(field);
     }

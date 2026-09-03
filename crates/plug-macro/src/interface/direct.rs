@@ -2,17 +2,15 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
-    FnArg, Ident, ImplItem, Pat, Path, Result, Signature, Token, Type, Visibility,
-    parse::{Parse, ParseStream},
-    parse_quote,
+    FnArg, Ident, ImplItem, Pat, Path, Result, Signature, Type, Visibility, parse_quote,
     spanned::Spanned,
 };
 
 use crate::{
     AsyncDispatchKind, AsyncDispatchModifier, FnKind, InterfaceShape, Methods, Mode, bail,
-    many::Many,
     meta_passing::{self, with_import},
-    path_ident, path_ident_mut, purescope, token,
+    parse::Many,
+    purescope,
 };
 
 // Read by implementations
@@ -67,7 +65,7 @@ fn fn_dispatch_resolve(as_defined: FnKind, as_implemented: FnKind) -> DispatchKi
 
         // Async dispatch is complex enough to have its own thing
         (Async { dispatch: a }, Async { dispatch: b }) => {
-            async_dispatch_resolve(a.as_deref(), b.as_deref())
+            async_dispatch_resolve(a.as_ref(), b.as_ref())
         }
 
         // If an impl of an "async" method does not require it,
@@ -218,33 +216,6 @@ fn resolve_and_dispatch(attrs: ParsedAttrs, shape: &InterfaceShape) -> Result<To
     })
 }
 
-struct ParsedAttrs {
-    mode: Mode,
-    paths: Option<Vec<Path>>,
-}
-
-// TODO: derive this
-impl Parse for ParsedAttrs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let mode: Mode = input.parse()?;
-
-        let paths: Option<Many<Path>> = match mode {
-            Mode::Direct => Some(input.parse()?),
-            Mode::FromMod => {
-                let _marker = input.parse::<Token![mod]>()?;
-                let content;
-                syn::parenthesized!(content in input);
-                Some(content.parse()?)
-            }
-            Mode::Dynamic => None,
-        };
-
-        let paths = paths.map(|x| x.inner);
-
-        Ok(ParsedAttrs { mode, paths })
-    }
-}
-
 pub struct Impl;
 
 impl super::Dispatch for Impl {
@@ -302,7 +273,7 @@ fn interface_meta_token(interface_name: impl std::fmt::Display) -> Ident {
 }
 
 fn registered_object_token() -> Ident {
-    format_ident!("__primary_object_for_this_module")
+    format_ident!("primary object for this module")
 }
 
 fn direct_impl_token(
