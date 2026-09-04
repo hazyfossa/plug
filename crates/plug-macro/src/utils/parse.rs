@@ -1,4 +1,7 @@
-use std::{marker::PhantomData, ops::Deref};
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt};
@@ -54,6 +57,12 @@ impl<T, C> Deref for Many<T, C> {
     type Target = C;
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+impl<T, C> DerefMut for Many<T, C> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }
 

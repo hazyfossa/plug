@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-
 use proc_macro2::TokenStream;
 use serde::{Deserialize, Serialize};
 use syn::spanned::Spanned;
+use syn::{FnArg, Pat};
 use syn::{
     Ident, ItemTrait, Path, Result, Token, TraitItem, TraitItemFn,
     parse::{Parse, ParseStream},
@@ -25,11 +24,6 @@ enum Mode {
     Direct,
 }
 
-enum CallConvention {
-    Direct,
-    Await,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
     Regular,
@@ -37,24 +31,112 @@ enum FnKind {
     Const,
 }
 
-type FunctionIdent = String;
-type Methods = HashMap<FunctionIdent, FnKind>;
+impl FnKind {
+    fn parse(sig: &syn::Signature) -> Result<Self> {
+        let is_async = sig.asyncness.is_some();
+        let is_const = sig.constness.is_some();
 
-type InterfaceMeta = Methods;
+        if is_async && is_const {
+            bail!(sig.constness => "constant async methods are impossible")
+        }
+
+        let kind = if is_async {
+            Self::Async
+        } else if is_const {
+            Self::Const
+        } else {
+            Self::Regular
+        };
+
+        Ok(kind)
+    }
+}
+
+impl FnKind {
+    fn call_convention(&self) -> CallConvention {
+        match self {
+            Self::Async => CallConvention::Await,
+            _ => CallConvention::Direct,
+        }
+    }
+}
+
+enum CallConvention {
+    /// fn() -> Value
+    Direct,
+
+    /// fn().await -> Value
+    Await,
+}
+
+enum Discriminant {
+    // &self, &mut self, etc
+    Object,
+
+    // for methods that do not need
+    // object state
+    Tag,
+}
+
+impl Discriminant {
+    fn parse(sig: &syn::Signature) -> Self {
+        match sig.receiver() {
+            Some(_) => Self::Object,
+            None => Self::Tag,
+        }
+    }
+}
+
+struct Method {
+    name: Ident,
+    args: Many<Ident>,
+    kind: FnKind,
+    discriminant: Discriminant,
+}
+
+impl Method {
+    fn parse(sig: &syn::Signature) -> Result<Self> {
+        let mut args: Many<Ident> = Vec::new().into();
+
+        for arg in &sig.inputs {
+            match arg {
+                FnArg::Receiver(_) => { /* handled by disciminant parse */ }
+
+                // TODO: this will become more complex when we add versioning
+                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
+                    args.push(arg_p.ident.clone());
+                }
+
+                other => bail!(other => "unsupported syntax"),
+            }
+        }
+
+        let name = sig.ident.clone();
+        let kind = FnKind::parse(sig)?;
+        let discriminant = Discriminant::parse(sig);
+
+        Ok(Self {
+            name,
+            args,
+            kind,
+            discriminant,
+        })
+    }
+}
 
 struct InterfaceShape {
     ident: Ident,
-    methods: Methods,
-    // TODO: const, types
-    final_method_impls: Vec<TraitItemFn>,
+    methods: Vec<Method>,
+    final_methods: Vec<TraitItemFn>,
+    // TODO: assoc const, types
 }
 
 impl InterfaceShape {
     fn new(ident: Ident) -> Self {
         Self {
             ident,
-            methods: HashMap::new(),
-            final_method_impls: Vec::new(),
+            methods: Vec::new(),
+            final_methods: Vec::new(),
         }
     }
 
@@ -62,34 +144,17 @@ impl InterfaceShape {
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
         let mut attrs = Attrs::extract(&mut input.attrs)?;
 
+        // TODO: modifers that we want but syn doesn't parse: final
+        // for now, we substitute via custom attr
         let is_final = attrs.select_one(["final"])?.is_some();
+
         if is_final {
-            self.final_method_impls.push(input.clone());
+            self.final_methods.push(input.clone());
             return Ok(false);
         }
 
-        let function = &input.sig;
-        let name = function.ident.to_string();
-
-        // TODO: modifers that we want but syn doesn't parse: final
-        // for now, we substitute via custom attr
-
-        let is_async = function.asyncness.is_some();
-        let is_const = function.constness.is_some();
-
-        if is_async && is_const {
-            bail!(function.constness => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            FnKind::Async
-        } else if is_const {
-            FnKind::Const
-        } else {
-            FnKind::Regular
-        };
-
-        self.methods.insert(name, kind);
+        let method = Method::parse(&input.sig)?;
+        self.methods.push(method);
 
         Ok(true)
     }
@@ -120,6 +185,10 @@ impl Parse for InterfaceAttrs {
 
         Ok(InterfaceAttrs { mode, paths })
     }
+}
+
+struct InterfaceMeta {
+    mode: Mode,
 }
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {

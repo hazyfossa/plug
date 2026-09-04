@@ -22,7 +22,7 @@
 // Based on that, enforce invariants at impl time, which helps with dispatch somewhat
 
 use proc_macro2::TokenStream;
-use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token, parse::Parse};
+use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
 use syn_derive::Parse;
 
 mod impls;
@@ -56,8 +56,17 @@ enum Code {
 #[rustfmt::skip]
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
-        Code::Trait(x)  => interface::trait_to_interface (syn::parse2(attrs)?, x),
-        Code::Struct(x) => object::struct_to_object      (syn::parse2(attrs)?, x),
-        Code::Impl(x)   => impls::register_impl          (syn::parse2(attrs)?, x),
+        Code::Trait(x)  => interface ::trait_to_interface (syn::parse2(attrs)?, x),
+        Code::Struct(x) => object    ::struct_to_object   (syn::parse2(attrs)?, x),
+        Code::Impl(x)   => impls     ::register_impl      (syn::parse2(attrs)?, x),
     }
+}
+
+enum Dispatch {
+    /// similar to enum-dispatch
+    Static,
+
+    /// similar to rustc's trait objects
+    /// (uses them under the hood, in fact)
+    Dynamic,
 }
