@@ -8,6 +8,7 @@ use syn::{
 };
 use syn_derive::{Parse, ToTokens};
 
+use crate::FnKind;
 use crate::{
     bail, ensure_empty_tokens,
     parse::{Attrs, Many},
@@ -22,34 +23,6 @@ enum Mode {
     Dynamic,
 
     Direct,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-enum FnKind {
-    Regular,
-    Async,
-    Const,
-}
-
-impl FnKind {
-    fn parse(sig: &syn::Signature) -> Result<Self> {
-        let is_async = sig.asyncness.is_some();
-        let is_const = sig.constness.is_some();
-
-        if is_async && is_const {
-            bail!(sig.constness => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            Self::Async
-        } else if is_const {
-            Self::Const
-        } else {
-            Self::Regular
-        };
-
-        Ok(kind)
-    }
 }
 
 impl FnKind {

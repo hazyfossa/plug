@@ -22,7 +22,8 @@
 // Based on that, enforce invariants at impl time, which helps with dispatch somewhat
 
 use proc_macro2::TokenStream;
-use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
+use serde::{Deserialize, Serialize};
+use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token, spanned::Spanned};
 use syn_derive::Parse;
 
 mod impls;
@@ -62,6 +63,7 @@ fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 enum Dispatch {
     /// similar to enum-dispatch
     Static,
@@ -69,4 +71,32 @@ enum Dispatch {
     /// similar to rustc's trait objects
     /// (uses them under the hood, in fact)
     Dynamic,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum FnKind {
+    Regular,
+    Async,
+    Const,
+}
+
+impl FnKind {
+    fn parse(sig: &syn::Signature) -> Result<Self> {
+        let is_async = sig.asyncness.is_some();
+        let is_const = sig.constness.is_some();
+
+        if is_async && is_const {
+            bail!(sig.constness.unwrap() => "constant async methods are impossible")
+        }
+
+        let kind = if is_async {
+            Self::Async
+        } else if is_const {
+            Self::Const
+        } else {
+            Self::Regular
+        };
+
+        Ok(kind)
+    }
 }

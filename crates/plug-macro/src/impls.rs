@@ -1,7 +1,16 @@
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
+use serde::{Deserialize, Serialize};
 use syn::{ItemImpl, Result, Type, parse::Nothing, spanned::Spanned};
 
-use crate::{bail, ensure_empty_tokens};
+use crate::{Dispatch, FnKind, bail, ensure_empty_tokens};
+
+#[derive(Serialize, Deserialize)]
+struct InterfaceMeta {
+    dispatch_kind: Dispatch,
+    methods: HashMap<String, FnKind>,
+}
 
 pub fn register_impl(attrs: Nothing, input: ItemImpl) -> Result<TokenStream> {
     let interface = match input.trait_ {
