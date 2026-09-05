@@ -13,6 +13,7 @@ use syn::{
 use syn_derive::{Parse, ToTokens};
 
 use crate::meta_passing::export;
+use crate::parse::path_ident;
 use crate::{
     bail, ensure_empty_tokens,
     meta_passing::with_import,
@@ -21,6 +22,12 @@ use crate::{
     syn_serde::ViaSerde,
 };
 
+// Interface properties
+
+// TODO: this may be redundant.
+// We may be able to achieve same ergonomics between dyn and static
+// and then it just becomes a question of dispatch
+// REF: supertrait
 #[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
 pub enum Mode {
     #[parse(peek = Token![mod])]
@@ -40,6 +47,17 @@ enum Dispatch {
     /// (uses them under the hood, in fact)
     Dynamic,
 }
+
+impl Mode {
+    fn dispatch_kind(&self) -> Dispatch {
+        match self {
+            Self::Dynamic => Dispatch::Dynamic,
+            _ => Dispatch::Static,
+        }
+    }
+}
+
+// Function properties
 
 #[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
@@ -104,6 +122,8 @@ impl Discriminant {
     }
 }
 
+// Method
+
 struct Method {
     name: Ident,
     args: Many<Ident>,
@@ -143,15 +163,17 @@ impl Method {
 
 struct InterfaceShape {
     name: Ident,
+    dispatch: Dispatch,
     methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
     // TODO: assoc const, types
 }
 
 impl InterfaceShape {
-    fn new(name: Ident) -> Self {
+    fn new(name: Ident, dispatch: Dispatch) -> Self {
         Self {
             name,
+            dispatch,
             methods: Vec::new(),
             final_methods: Vec::new(),
         }
@@ -167,13 +189,18 @@ impl InterfaceShape {
 
         if is_final {
             self.final_methods.push(input.clone());
-            return Ok(false);
+            Ok(false)
+        } else {
+            let method = Method::parse(&input.sig)?;
+            self.methods.push(method);
+
+            // Rust does not support const fn in traits natively
+            // so we erase this after parsing
+            // const-ness will be restored as appropriate by dispatch impl
+            input.sig.constness = None;
+
+            Ok(true)
         }
-
-        let method = Method::parse(&input.sig)?;
-        self.methods.push(method);
-
-        Ok(true)
     }
 }
 
@@ -247,16 +274,23 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
     Ok(content)
 }
 
-// impls
+// impl handling
+
+type Methods = HashMap<String, FnKind>;
 
 #[derive(Serialize, Deserialize)]
 struct InterfaceMeta {
     pub mode: Mode,
-    pub methods: HashMap<String, FnKind>,
+    pub methods: Methods,
 }
 
 fn interface_meta_marker(name: &Ident) -> Ident {
     format_ident!("__codegen_{name}_meta")
+}
+
+fn registered_module_object_marker(interface: &Ident) -> Ident {
+    // TODO: are spaces supported via r# # ?
+    format_ident!("registered module object for {interface}")
 }
 
 pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
@@ -289,8 +323,29 @@ pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
 struct Context {
     object: Path,
     interface: Path,
+    // impl_methods: ViaSerde<Methods>,
 }
 
 fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<TokenStream> {
+    let meta = meta.0;
+
+    // Signal is the thing that allows us to gather implementations
+    let signal = match meta.mode {
+        Mode::Direct => None,
+        Mode::FromMod => {
+            let interface = path_ident(&ctx.interface)?;
+            let marker = registered_module_object_marker(interface);
+
+            let object = ctx.object;
+
+            Some(quote! {
+                #[doc(hidden)]
+                type #marker = #object;
+            })
+        }
+        Mode::Dynamic => todo!(),
+    };
+
+    let supports_const = matches!(meta.mode.dispatch_kind(), Dispatch::Static);
     todo!()
 }
