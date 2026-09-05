@@ -1,18 +1,15 @@
 use std::{
     collections::HashMap,
-    error::Error,
     sync::{LazyLock, RwLock},
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use serde::{Serialize, de::DeserializeOwned};
-use syn::{LitStr, Path, Result, parse_quote};
+use syn::{LitStr, Path, Result, parse::Parse, parse_quote};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{
-    amyhow, bail,
+    bail,
     parse::{Many, Tokens},
 };
 
@@ -25,37 +22,14 @@ fn random_string() -> Result<String> {
     Ok(format!("{rand:x}"))
 }
 
-fn encode<T: Serialize>(input: T) -> Result<TokenStream> {
-    let data = minicbor_serde::to_vec(input).map_err(|e| amyhow!(=> "failed to encode: {e}"))?;
-
-    let data = base64.encode(data);
-    let data = data.into_token_stream();
-
-    Ok(data)
-}
-
-fn decode<T: DeserializeOwned>(input: TokenStream) -> Result<T> {
-    let str = syn::parse2::<LitStr>(input)?;
-
-    let ret: std::result::Result<T, Box<dyn Error>> = (|| {
-        let data = base64.decode(str.value())?;
-        let data = minicbor_serde::from_slice(&data)?;
-        Ok(data)
-    })();
-
-    ret.map_err(|e| amyhow!(=> "failed to decode: {e}"))
-}
-
-pub fn export<T: Serialize>(marker: &str, input: T) -> Result<TokenStream> {
+pub fn export<T: ToTokens>(marker: &str, input: T) -> Result<TokenStream> {
     let ident = format_ident!("{marker}");
-
-    let data = encode(input)?;
 
     let content = quote! {
         #[doc(hidden)]
         macro_rules! #ident {
             ($($m:tt)*) => {
-                ::plug_macro::__import_advance!([#data], $($m)* );
+                ::plug_macro::__import_advance!([#input], $($m)* );
             };
         }
 
@@ -71,13 +45,13 @@ pub struct RawImport {
 }
 
 impl RawImport {
-    pub fn decode<Aux: DeserializeOwned, Imp: DeserializeOwned>(self) -> Result<(Aux, Vec<Imp>)> {
-        let aux = decode(self.aux)?;
+    pub fn decode<Aux: Parse, Imp: Parse>(self) -> Result<(Aux, Vec<Imp>)> {
+        let aux = syn::parse2(self.aux)?;
 
         let imported = self
             .imported
             .into_iter()
-            .map(decode::<Imp>)
+            .map(syn::parse2)
             .collect::<Result<_>>()?;
 
         Ok((aux, imported))
@@ -162,7 +136,7 @@ pub fn import_advance(mut chain: ImportChain) -> Result<TokenStream> {
     }
 }
 
-pub fn import<Aux: Serialize>(
+pub fn import<Aux: ToTokens>(
     sources: impl IntoIterator<Item = Path>,
     aux: Aux,
     callback: Callback,
@@ -170,7 +144,7 @@ pub fn import<Aux: Serialize>(
     let token = CB.register_callback(callback)?;
 
     let sources = sources.into_iter().collect();
-    let pass = encode(aux)?;
+    let pass = aux.to_token_stream();
     let chain = ImportChain::new(sources, token, pass);
 
     import_advance(chain)

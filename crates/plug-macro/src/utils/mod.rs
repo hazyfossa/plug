@@ -1,4 +1,5 @@
 pub mod parse;
+mod syn_serde;
 
 #[cfg(feature = "meta-passing")]
 pub(crate) mod meta_passing;
