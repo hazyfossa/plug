@@ -1,21 +1,25 @@
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
+use syn::parse::Nothing;
 use syn::spanned::Spanned;
-use syn::{FnArg, Pat};
+use syn::{FnArg, ItemImpl, Pat, Type};
 use syn::{
     Ident, ItemTrait, Path, Result, Token, TraitItem, TraitItemFn,
     parse::{Parse, ParseStream},
 };
 use syn_derive::{Parse, ToTokens};
 
-use crate::syn_serde::ViaSerde;
+use crate::meta_passing::export;
 use crate::{
-    FnKind, bail, ensure_empty_tokens,
-    parse::{Attrs, Many},
+    bail, ensure_empty_tokens,
+    meta_passing::with_import,
+    parse::{Attrs, Many, path_sibling},
     retain_by_mask,
+    syn_serde::ViaSerde,
 };
-use crate::{InterfaceMeta, interface_meta_marker, meta_passing};
 
 #[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
 pub enum Mode {
@@ -35,6 +39,34 @@ enum Dispatch {
     /// similar to rustc's trait objects
     /// (uses them under the hood, in fact)
     Dynamic,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum FnKind {
+    Regular,
+    Async,
+    Const,
+}
+
+impl FnKind {
+    fn parse(sig: &syn::Signature) -> Result<Self> {
+        let is_async = sig.asyncness.is_some();
+        let is_const = sig.constness.is_some();
+
+        if is_async && is_const {
+            bail!(sig.constness.unwrap() => "constant async methods are impossible")
+        }
+
+        let kind = if is_async {
+            Self::Async
+        } else if is_const {
+            Self::Const
+        } else {
+            Self::Regular
+        };
+
+        Ok(kind)
+    }
 }
 
 enum CallConvention {
@@ -206,11 +238,59 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
             .collect(),
     };
 
-    let meta = meta_passing::export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
+    let meta = export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
 
     let content = quote! {
         #meta
     };
 
     Ok(content)
+}
+
+// impls
+
+#[derive(Serialize, Deserialize)]
+struct InterfaceMeta {
+    pub mode: Mode,
+    pub methods: HashMap<String, FnKind>,
+}
+
+fn interface_meta_marker(name: &Ident) -> Ident {
+    format_ident!("__codegen_{name}_meta")
+}
+
+pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
+    let interface = match input.trait_ {
+        Some((path, _)) => path,
+        None => bail!(=> "This macro only makes sense for interface implementations"),
+    };
+
+    // NOTE: the following code does not actually check if the path resolves to a thing
+    // that implements "plug::Object". It only saves downstream code from working with
+    // obviously wrong inputs (since, for example, plug::Object will surely never be
+    // implemented for a slice or tuple)
+    let object = match *input.self_ty {
+        Type::Path(x) => x.path,
+        other => bail!(other => "Interfaces can only be implemented on objects"),
+    };
+
+    ensure_empty_tokens!(
+        input.generics.params,
+        "Generic interfaces are not supported (yet)"
+    );
+
+    let meta_source = path_sibling(&interface, interface_meta_marker)?;
+
+    let ctx = Context { object, interface };
+    with_import!(#simple meta_source => register_impl_inner(ctx))
+}
+
+#[derive(Parse, ToTokens)]
+struct Context {
+    object: Path,
+    interface: Path,
+}
+
+fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<TokenStream> {
+    todo!()
 }

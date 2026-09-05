@@ -21,6 +21,8 @@
 // Consider also: a hybrid approach, where Interface passes a lot more metadata, but one-way.
 // Based on that, enforce invariants at impl time, which helps with dispatch somewhat
 
+// TODO: consider merging interface and impls
+
 use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
@@ -29,7 +31,6 @@ use serde::{Deserialize, Serialize};
 use syn::{Ident, ItemImpl, ItemStruct, ItemTrait, Result, Token, spanned::Spanned};
 use syn_derive::Parse;
 
-mod impls;
 mod interface;
 mod object;
 
@@ -61,47 +62,8 @@ enum Code {
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x)  => interface ::trait_to_interface (syn::parse2(attrs)?, x),
+        Code::Impl(x)   => interface ::register_impl      (syn::parse2(attrs)?, x),
         Code::Struct(x) => object    ::struct_to_object   (syn::parse2(attrs)?, x),
-        Code::Impl(x)   => impls     ::register_impl      (syn::parse2(attrs)?, x),
+
     }
-}
-
-// TODO: refactor (the following is a common between interface and impls)
-
-#[derive(Clone, Serialize, Deserialize)]
-enum FnKind {
-    Regular,
-    Async,
-    Const,
-}
-
-impl FnKind {
-    fn parse(sig: &syn::Signature) -> Result<Self> {
-        let is_async = sig.asyncness.is_some();
-        let is_const = sig.constness.is_some();
-
-        if is_async && is_const {
-            bail!(sig.constness.unwrap() => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            Self::Async
-        } else if is_const {
-            Self::Const
-        } else {
-            Self::Regular
-        };
-
-        Ok(kind)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct InterfaceMeta {
-    pub mode: interface::Mode,
-    pub methods: HashMap<String, FnKind>,
-}
-
-fn interface_meta_marker(name: &Ident) -> Ident {
-    format_ident!("__codegen_{name}_meta")
 }
