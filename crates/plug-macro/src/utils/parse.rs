@@ -237,13 +237,12 @@ pub fn path_ident(path: &Path) -> Result<&Ident> {
     }
 }
 
-// TODO: reconsider this as a pattern
-// better written as replace_path_ident which makes a clone
-pub fn path_ident_mut(path: &mut Path) -> Result<&mut Ident> {
-    let span = path.span(); // This is purely for for borrowck happiness
+pub fn path_sibling(source: &Path, f: impl Fn(&Ident) -> Ident) -> Result<Path> {
+    let mut path = source.clone();
+    let ident = path_ident(&path)?;
 
-    match path.segments.last_mut() {
-        Some(x) => Ok(&mut x.ident),
-        None => bail!(span => "expected non-empty path"),
-    }
+    let new_ident = f(ident);
+    path.segments.push(parse_quote!(#new_ident));
+
+    Ok(path)
 }

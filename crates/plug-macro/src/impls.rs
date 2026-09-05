@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
+use quote::format_ident;
 use serde::{Deserialize, Serialize};
-use syn::{ItemImpl, Result, Type, parse::Nothing, spanned::Spanned};
+use syn::{Ident, ItemImpl, Path, Result, Type, parse::Nothing, spanned::Spanned};
 
-use crate::{Dispatch, FnKind, bail, ensure_empty_tokens};
-
-#[derive(Serialize, Deserialize)]
-struct InterfaceMeta {
-    dispatch_kind: Dispatch,
-    methods: HashMap<String, FnKind>,
-}
+use crate::{
+    FnKind, InterfaceMeta, bail, ensure_empty_tokens,
+    interface::{self, Mode},
+    interface_meta_marker,
+    meta_passing::with_import,
+    parse::path_sibling,
+    syn_serde::ViaSerde,
+};
 
 pub fn register_impl(attrs: Nothing, input: ItemImpl) -> Result<TokenStream> {
     let interface = match input.trait_ {
@@ -32,5 +34,13 @@ pub fn register_impl(attrs: Nothing, input: ItemImpl) -> Result<TokenStream> {
         "Generic interfaces are not supported (yet)"
     );
 
-    todo!("get interface meta, codegen")
+    let meta_source = path_sibling(&interface, interface_meta_marker)?;
+
+    with_import!(#simple meta_source => register_impl_inner(object))
+}
+
+fn register_impl_inner(object: Path, meta: ViaSerde<InterfaceMeta>) -> Result<TokenStream> {
+    let meta = meta.0;
+    let x = matches!(meta.mode, Mode::Dynamic);
+    bail!(object => "{x}");
 }

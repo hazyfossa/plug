@@ -1,12 +1,11 @@
 pub mod parse;
-mod syn_serde;
+pub mod syn_serde;
 
 #[cfg(feature = "meta-passing")]
 pub(crate) mod meta_passing;
 
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{Ident, Result};
+use syn::Result;
 
 pub trait MacroReturn {
     fn into_syn_result(self) -> Result<TokenStream>;
@@ -90,16 +89,6 @@ macro_rules! ensure_empty_tokens {
     };
 }
 pub(crate) use ensure_empty_tokens;
-
-pub fn purescope(vis: syn::Visibility, ident: Ident, content: TokenStream) -> TokenStream {
-    quote! {
-        #[allow(non_snake_case)]
-        #vis mod #ident {
-            pub use super::*;
-            #content
-        }
-    }
-}
 
 pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
     assert_eq!(mask.len(), values.len());

@@ -4,8 +4,8 @@ use std::{
 };
 
 use proc_macro2::TokenStream;
-use quote::{ToTokens, format_ident, quote};
-use syn::{LitStr, Path, Result, parse::Parse, parse_quote};
+use quote::{ToTokens, quote};
+use syn::{Ident, LitStr, Path, Result, parse::Parse, parse_quote};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{
@@ -22,18 +22,16 @@ fn random_string() -> Result<String> {
     Ok(format!("{rand:x}"))
 }
 
-pub fn export<T: ToTokens>(marker: &str, input: T) -> Result<TokenStream> {
-    let ident = format_ident!("{marker}");
-
+pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
     let content = quote! {
         #[doc(hidden)]
-        macro_rules! #ident {
+        macro_rules! #marker {
             ($($m:tt)*) => {
                 ::plug_macro::__import_advance!([#input], $($m)* );
             };
         }
 
-        pub(crate) use #ident;
+        pub(crate) use #marker;
     };
 
     Ok(content)
@@ -150,8 +148,17 @@ pub fn import<Aux: ToTokens>(
     import_advance(chain)
 }
 
+// TODO: import once as a common special case
 macro_rules! with_import {
-    ($sources:ident => |$aux:ident, $imp:ident| { $($body:tt)* } ) => {
+    (#simple $source:ident => $fn:ident($aux:ident)) => {
+        $crate::meta_passing::with_import!([$source] => |$aux, imported_raw| {
+            let mut raw = imported_raw;
+            let imp = raw.pop().unwrap();
+            $fn($aux, imp)
+        })
+    };
+
+    ($sources:expr => |$aux:ident, $imp:ident| { $($body:tt)* } ) => {
         $crate::meta_passing::import($sources, $aux, move |raw| {
             let ($aux, $imp) = raw.decode()?;
             let ret = { $($body)* };

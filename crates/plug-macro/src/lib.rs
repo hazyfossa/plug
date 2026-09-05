@@ -21,9 +21,12 @@
 // Consider also: a hybrid approach, where Interface passes a lot more metadata, but one-way.
 // Based on that, enforce invariants at impl time, which helps with dispatch somewhat
 
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
+use quote::format_ident;
 use serde::{Deserialize, Serialize};
-use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token, spanned::Spanned};
+use syn::{Ident, ItemImpl, ItemStruct, ItemTrait, Result, Token, spanned::Spanned};
 use syn_derive::Parse;
 
 mod impls;
@@ -63,15 +66,7 @@ fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-enum Dispatch {
-    /// similar to enum-dispatch
-    Static,
-
-    /// similar to rustc's trait objects
-    /// (uses them under the hood, in fact)
-    Dynamic,
-}
+// TODO: refactor (the following is a common between interface and impls)
 
 #[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
@@ -99,4 +94,14 @@ impl FnKind {
 
         Ok(kind)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct InterfaceMeta {
+    pub mode: interface::Mode,
+    pub methods: HashMap<String, FnKind>,
+}
+
+fn interface_meta_marker(name: &Ident) -> Ident {
+    format_ident!("__codegen_{name}_meta")
 }

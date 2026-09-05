@@ -1,4 +1,5 @@
 use proc_macro2::TokenStream;
+use quote::quote;
 use serde::{Deserialize, Serialize};
 use syn::spanned::Spanned;
 use syn::{FnArg, Pat};
@@ -8,21 +9,40 @@ use syn::{
 };
 use syn_derive::{Parse, ToTokens};
 
-use crate::FnKind;
+use crate::syn_serde::ViaSerde;
 use crate::{
-    bail, ensure_empty_tokens,
+    FnKind, bail, ensure_empty_tokens,
     parse::{Attrs, Many},
     retain_by_mask,
 };
+use crate::{InterfaceMeta, interface_meta_marker, meta_passing};
 
 #[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
-enum Mode {
+pub enum Mode {
     #[parse(peek = Token![mod])]
     FromMod,
     #[parse(peek = Token![dyn])]
     Dynamic,
 
     Direct,
+}
+
+#[derive(Serialize, Deserialize)]
+enum Dispatch {
+    /// similar to enum-dispatch
+    Static,
+
+    /// similar to rustc's trait objects
+    /// (uses them under the hood, in fact)
+    Dynamic,
+}
+
+enum CallConvention {
+    /// fn() -> Value
+    Direct,
+
+    /// fn().await -> Value
+    Await,
 }
 
 impl FnKind {
@@ -32,14 +52,6 @@ impl FnKind {
             _ => CallConvention::Direct,
         }
     }
-}
-
-enum CallConvention {
-    /// fn() -> Value
-    Direct,
-
-    /// fn().await -> Value
-    Await,
 }
 
 enum Discriminant {
@@ -98,16 +110,16 @@ impl Method {
 }
 
 struct InterfaceShape {
-    ident: Ident,
+    name: Ident,
     methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
     // TODO: assoc const, types
 }
 
 impl InterfaceShape {
-    fn new(ident: Ident) -> Self {
+    fn new(name: Ident) -> Self {
         Self {
-            ident,
+            name,
             methods: Vec::new(),
             final_methods: Vec::new(),
         }
@@ -160,10 +172,6 @@ impl Parse for InterfaceAttrs {
     }
 }
 
-struct InterfaceMeta {
-    mode: Mode,
-}
-
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
     ensure_empty_tokens!(
         input.generics.params,
@@ -187,5 +195,22 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
     // This removes all methods that are not implementable
     retain_by_mask(&ret, &mut input.items);
 
-    todo!()
+    // TODO: dispatch here
+
+    let meta = InterfaceMeta {
+        mode: attrs.mode,
+        methods: shape
+            .methods
+            .into_iter()
+            .map(|x| (x.name.to_string(), x.kind))
+            .collect(),
+    };
+
+    let meta = meta_passing::export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
+
+    let content = quote! {
+        #meta
+    };
+
+    Ok(content)
 }

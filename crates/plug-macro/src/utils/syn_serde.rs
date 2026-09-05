@@ -8,7 +8,7 @@ use syn::{LitStr, Result, parse::Parse};
 
 use crate::amyhow;
 
-struct ViaSerde<T>(T);
+pub struct ViaSerde<T>(pub T);
 
 impl<T> Parse for ViaSerde<T>
 where
