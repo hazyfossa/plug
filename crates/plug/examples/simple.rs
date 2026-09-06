@@ -16,6 +16,13 @@ trait Test {
     fn test(&self) -> bool;
 }
 
+#[plug]
+impl Test for TestObject {
+    fn test(&self) -> bool {
+        true
+    }
+}
+
 // impl Init for TestObject::State {
 //     type Error = std::convert::Infallible;
 //     async fn init(config: &Self::Config) -> Result<Self, Self::Error> {

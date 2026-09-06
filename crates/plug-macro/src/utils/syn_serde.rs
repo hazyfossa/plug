@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use base64::{Engine, engine::general_purpose::STANDARD as base64};
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::ToTokens;
 use serde::{Serialize, de::DeserializeOwned};
 use syn::{LitStr, Result, parse::Parse};
@@ -38,21 +38,3 @@ where
         data.to_tokens(tokens);
     }
 }
-
-// TODO: serialize spans
-
-struct Cell {
-    line: u32,
-    column: u32,
-}
-
-struct SerdeSpan {
-    start: Cell,
-    end: Cell,
-}
-
-// impl From<Span> for SerdeSpan {
-//     fn from(value: proc_macro::Span) -> Self {
-//         proc_macro::Span::
-//     }
-// }

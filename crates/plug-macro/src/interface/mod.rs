@@ -3,31 +3,21 @@ use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
-use syn::parse::Nothing;
+use syn::parse::{Nothing, Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{FnArg, ItemImpl, Pat, Type};
-use syn::{
-    Ident, ItemTrait, Path, Result, Token, TraitItem, TraitItemFn,
-    parse::{Parse, ParseStream},
-};
+use syn::{FnArg, ImplItem, ItemImpl, Pat, Signature, Token, Type};
+use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
-use crate::meta_passing::export;
 use crate::parse::path_ident;
 use crate::{
     bail, ensure_empty_tokens,
-    meta_passing::with_import,
+    meta_passing::{export, with_import},
     parse::{Attrs, Many, path_sibling},
     retain_by_mask,
     syn_serde::ViaSerde,
 };
 
-// Interface properties
-
-// TODO: this may be redundant.
-// We may be able to achieve same ergonomics between dyn and static
-// and then it just becomes a question of dispatch
-// REF: supertrait
 #[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
 pub enum Mode {
     #[parse(peek = Token![mod])]
@@ -38,9 +28,10 @@ pub enum Mode {
     Direct,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 enum Dispatch {
     /// similar to enum-dispatch
+    #[default]
     Static,
 
     /// similar to rustc's trait objects
@@ -56,8 +47,6 @@ impl Mode {
         }
     }
 }
-
-// Function properties
 
 #[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
@@ -122,8 +111,6 @@ impl Discriminant {
     }
 }
 
-// Method
-
 struct Method {
     name: Ident,
     args: Many<Ident>,
@@ -163,17 +150,15 @@ impl Method {
 
 struct InterfaceShape {
     name: Ident,
-    dispatch: Dispatch,
     methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
     // TODO: assoc const, types
 }
 
 impl InterfaceShape {
-    fn new(name: Ident, dispatch: Dispatch) -> Self {
+    fn new(name: Ident) -> Self {
         Self {
             name,
-            dispatch,
             methods: Vec::new(),
             final_methods: Vec::new(),
         }
@@ -181,7 +166,7 @@ impl InterfaceShape {
 
     // Returns whether the method is implementable
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
-        let mut attrs = Attrs::extract(&mut input.attrs)?;
+        let mut attrs = Attrs::extract(&mut input.attrs);
 
         // TODO: modifers that we want but syn doesn't parse: final
         // for now, we substitute via custom attr
@@ -189,18 +174,18 @@ impl InterfaceShape {
 
         if is_final {
             self.final_methods.push(input.clone());
-            Ok(false)
-        } else {
-            let method = Method::parse(&input.sig)?;
-            self.methods.push(method);
-
-            // Rust does not support const fn in traits natively
-            // so we erase this after parsing
-            // const-ness will be restored as appropriate by dispatch impl
-            input.sig.constness = None;
-
-            Ok(true)
+            return Ok(false);
         }
+
+        let method = Method::parse(&input.sig)?;
+        self.methods.push(method);
+
+        // Rust does not support const fn in traits natively
+        // so we erase this after parsing
+        // const-ness will be restored as appropriate by dispatch impl
+        input.sig.constness = None;
+
+        Ok(true)
     }
 }
 
@@ -265,16 +250,17 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
             .collect(),
     };
 
-    let meta = export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
+    let exported_meta = export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
 
     let content = quote! {
-        #meta
+        #input
+        #exported_meta
     };
 
     Ok(content)
 }
 
-// impl handling
+// impls
 
 type Methods = HashMap<String, FnKind>;
 
@@ -284,18 +270,17 @@ struct InterfaceMeta {
     pub methods: Methods,
 }
 
-fn interface_meta_marker(name: &Ident) -> Ident {
-    format_ident!("__codegen_{name}_meta")
+fn interface_meta_marker(interface: &Ident) -> Ident {
+    format_ident!("__codegen_{interface}_meta")
 }
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
-    // TODO: are spaces supported via r# # ?
-    format_ident!("registered module object for {interface}")
+    format_ident!("registered {interface} impl for this module")
 }
 
-pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
+pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     let interface = match input.trait_ {
-        Some((path, _)) => path,
+        Some((ref path, _)) => path.clone(),
         None => bail!(=> "This macro only makes sense for interface implementations"),
     };
 
@@ -304,7 +289,7 @@ pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
     // obviously wrong inputs (since, for example, plug::Object will surely never be
     // implemented for a slice or tuple)
     let object = match *input.self_ty {
-        Type::Path(x) => x.path,
+        Type::Path(ref x) => x.path.clone(),
         other => bail!(other => "Interfaces can only be implemented on objects"),
     };
 
@@ -313,17 +298,45 @@ pub fn register_impl(_: Nothing, input: ItemImpl) -> Result<TokenStream> {
         "Generic interfaces are not supported (yet)"
     );
 
+    let impl_functions = input
+        .items
+        .iter_mut()
+        .filter_map(|x| match x {
+            ImplItem::Fn(func) => Some(ImplementedMethod {
+                attrs: Attrs::extract(&mut func.attrs),
+                sig: func.sig.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+
     let meta_source = path_sibling(&interface, interface_meta_marker)?;
 
-    let ctx = Context { object, interface };
-    with_import!(#simple meta_source => register_impl_inner(ctx))
+    let ctx = Context {
+        object,
+        interface,
+        impl_methods: impl_functions,
+    };
+
+    let continuation = with_import!(#simple meta_source => register_impl_inner(ctx))?;
+
+    Ok(quote! {
+        #input
+        #continuation
+    })
 }
 
 #[derive(Parse, ToTokens)]
 struct Context {
     object: Path,
     interface: Path,
-    // impl_methods: ViaSerde<Methods>,
+    impl_methods: Many<ImplementedMethod>,
+}
+
+#[derive(Parse, ToTokens)]
+struct ImplementedMethod {
+    attrs: Attrs,
+    sig: Signature,
 }
 
 fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<TokenStream> {
@@ -346,6 +359,17 @@ fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<To
         Mode::Dynamic => todo!(),
     };
 
-    let supports_const = matches!(meta.mode.dispatch_kind(), Dispatch::Static);
+    let is_static = matches!(meta.mode.dispatch_kind(), Dispatch::Static);
+    let supports_const = is_static;
+    let supports_inline_async = is_static;
+
+    for func in ctx.impl_methods.inner {
+        let name = func.sig.ident.to_string();
+        // TODO: rustc already checks whether the method exists as part of trait resolution
+        // we should instead return Ok("") here instead of unwrap
+        let as_defined = meta.methods.get(&name).unwrap();
+        let as_implemented = FnKind::parse(&func.sig)?;
+    }
+
     todo!()
 }

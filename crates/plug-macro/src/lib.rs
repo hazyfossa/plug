@@ -23,12 +23,8 @@
 
 // TODO: consider merging interface and impls
 
-use std::collections::HashMap;
-
 use proc_macro2::TokenStream;
-use quote::format_ident;
-use serde::{Deserialize, Serialize};
-use syn::{Ident, ItemImpl, ItemStruct, ItemTrait, Result, Token, spanned::Spanned};
+use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
 use syn_derive::Parse;
 
 mod interface;

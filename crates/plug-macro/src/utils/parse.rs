@@ -4,15 +4,15 @@ use std::{
 };
 
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, TokenStreamExt};
+use quote::{ToTokens, TokenStreamExt, quote};
 use serde::{Deserialize, Serialize};
 use syn::{
-    Attribute, Ident, Meta, Path, Result, Token,
+    Attribute, Ident, Meta, MetaList, Path, Result, Token,
     parse::{Parse, ParseStream},
-    parse_quote,
     punctuated::Punctuated,
     spanned::Spanned,
 };
+use syn_derive::ToTokens;
 
 // Many
 
@@ -49,7 +49,7 @@ where
     for<'a> &'a C: IntoIterator<Item = &'a T>,
 {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.append_terminated(&self.inner, syn::token::Comma::default());
+        tokens.append_terminated(&self.inner, Token![,](Span::call_site()));
     }
 }
 
@@ -80,14 +80,16 @@ impl Parse for Tokens {
 
 impl ToTokens for Tokens {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.append_all(self.0.clone());
+        let this = &self.0;
+        tokens.append_all(quote! { [#this] });
     }
 
     fn into_token_stream(self) -> TokenStream
     where
         Self: Sized,
     {
-        self.0
+        let this = &self.0;
+        quote! { [#this] }
     }
 }
 
@@ -102,16 +104,16 @@ pub struct WithSpan<T> {
 }
 
 impl<T> WithSpan<T> {
-    fn new(value: T, span: Span) -> Self {
+    pub fn new(value: T, span: Span) -> Self {
         Self {
             inner: value,
             span: Some(span),
         }
     }
 
-    fn span(&self) -> Span {
+    pub fn span(&self) -> Span {
         self.span
-            .expect("Cannot rely on spans of values that have been passed thorugh metadata")
+            .expect("Cannot rely on spans of values that have been passed through metadata")
     }
 
     pub fn map<U, F>(self, f: F) -> WithSpan<U>
@@ -122,6 +124,10 @@ impl<T> WithSpan<T> {
             inner: f(self.inner),
             span: self.span,
         }
+    }
+
+    pub fn forget_span(self) -> T {
+        self.inner
     }
 }
 
@@ -134,49 +140,67 @@ impl<T> std::ops::Deref for WithSpan<T> {
 
 // Attribute parsing
 
-pub struct Attrs(Vec<Attribute>);
+#[derive(ToTokens)]
+pub struct Attrs(Many<MetaList>);
+
+impl Parse for Attrs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        // TODO
+        input.parse().map(Self)
+    }
+}
 
 impl Attrs {
-    pub fn extract(input: &mut Vec<Attribute>) -> Result<Self> {
-        input
-            .extract_if(.., |attr| attr.path().is_ident(crate::NAME))
-            .map(|attr| {
-                let meta = &attr.meta.require_list()?.tokens;
-                Ok(parse_quote!(#[#meta]))
+    pub fn extract(input: &mut Vec<Attribute>) -> Self {
+        // TODO: simplify?
+        let inner = input
+            .extract_if(.., |attr| {
+                attr.meta
+                    .require_list()
+                    .is_ok_and(|x| x.path.is_ident(crate::NAME))
             })
-            .collect::<Result<_>>()
-            .map(Self)
+            .map(|attr| match attr.meta {
+                Meta::List(x) => x,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+
+        Self(inner.into())
     }
 
     // This is very far from performant, but it works
+    // TODO: rewrite without extract
     pub fn select_one<'a, 'b>(
         &'a mut self,
         flags: impl IntoIterator<Item = &'b str>,
-    ) -> Result<Option<Attribute>> {
+    ) -> Result<Option<Ident>> {
         let flags: Vec<_> = flags.into_iter().collect();
 
-        let mut matches = self.0.extract_if(.., |attr| {
-            flags.iter().any(|flag| attr.path().is_ident(flag))
-                // Ensure a bare flag // TODO: or not
-                && matches!(attr.meta, Meta::Path(_))
-        });
+        let mut matches = self
+            .0
+            .extract_if(.., |attr| flags.iter().any(|flag| attr.path.is_ident(flag)));
 
-        let ret = matches.next();
+        let ret = match matches.next() {
+            Some(x) => {
+                ensure_empty_tokens!(x.tokens, "this is a flag-style attribute");
+
+                // Unwrap is guarded by extraction case above
+                x.path.get_ident().unwrap().clone()
+            }
+            None => return Ok(None),
+        };
 
         if let Some(second_match) = matches.next() {
             // TODO: is it possible to point out the first one here?
             bail!(second_match => "duplicate attribute");
+        } else {
+            Ok(Some(ret))
         }
-
-        Ok(ret)
     }
 
     pub fn select_tokenum<T: TokEnum>(&mut self) -> Result<Option<WithSpan<T>>> {
         self.select_one(T::all_states())?
-            .map(|arg| {
-                arg.parse_args()
-                    .map(|value| WithSpan::new(value, arg.span()))
-            })
+            .map(|flag| T::from_ident(&flag).map(|value| WithSpan::new(value, flag.span())))
             .transpose()
     }
 }
@@ -185,6 +209,7 @@ impl Attrs {
 // TODO: non-ident reprs
 
 pub trait TokEnum: Parse {
+    fn from_ident(ident: &syn::Ident) -> syn::Result<Self>;
     fn all_states() -> impl IntoIterator<Item = &'static str>;
 }
 
@@ -192,22 +217,28 @@ macro_rules! tokenum {
     (
         $(#[$($attr:meta)*])*
         $vis:vis enum $name:ident {
-            $($field:ident $(= $str:literal)?),*
+            $(
+                $(#[$($fattr:meta)*])*
+                $field:ident $(= $str:literal)?
+            ),*
             $(,)?
         }
 ) => {
         $(#[$($attr)*])*
         $vis enum $name {
-            $($field { span: proc_macro2::Span } ),*
+            $( $(#[$($fattr)*])* $field /* { span: proc_macro2::Span } */ ),*
         }
 
-        impl syn::parse::Parse for $name {
-            fn parse(input: ParseStream) -> syn::Result<Self> {
-                let ident: syn::Ident = input.parse()?;
-                let span = syn::spanned::Spanned::span(&ident);
+        impl $crate::utils::parse::TokEnum for $name {
+            fn all_states() -> impl IntoIterator<Item = &'static str> {
+                [$( $crate::parse::tokenum!(@str $field $($str)?) ),*]
+            }
+
+            fn from_ident(ident: &syn::Ident) -> syn::Result<Self> {
+                // let span = syn::spanned::Spanned::span(&ident);
 
                 let ret = match &*ident.to_string() {
-                    $($crate::parse::tokenum!(@str $field $($str)?) => Self::$field { span },)*
+                    $($crate::parse::tokenum!(@str $field $($str)?) => Self::$field /* { span } */ ,)*
                     // TODO: expected one of
                     other => bail!(other => "unexpected value: {other}")
                 };
@@ -215,20 +246,15 @@ macro_rules! tokenum {
                 Ok(ret)
             }
         }
-
-        impl $crate::utils::parse::TokEnum for $name {
-            fn all_states() -> impl IntoIterator<Item = &'static str> {
-                [$( $crate::parse::tokenum!(@str $field $($str)?) ),*]
-            }
-        }
     };
 
     (@str $field:ident $str:literal) => { $str };
     (@str $field:ident) => { stringify!($field) };
 }
+
 pub(crate) use tokenum;
 
-use crate::bail;
+use crate::{bail, ensure_empty_tokens};
 
 pub fn path_ident(path: &Path) -> Result<&Ident> {
     match path.segments.last() {
@@ -239,10 +265,13 @@ pub fn path_ident(path: &Path) -> Result<&Ident> {
 
 pub fn path_sibling(source: &Path, f: impl Fn(&Ident) -> Ident) -> Result<Path> {
     let mut path = source.clone();
-    let ident = path_ident(&path)?;
 
-    let new_ident = f(ident);
-    path.segments.push(parse_quote!(#new_ident));
+    let ident = match path.segments.last_mut() {
+        Some(x) => &mut x.ident,
+        None => bail!(path => "expected non-empty path"),
+    };
+
+    *ident = f(ident);
 
     Ok(path)
 }
