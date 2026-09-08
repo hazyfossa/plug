@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::parse::{Nothing, Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ItemImpl, Pat, Signature, Token, Type, parse_quote};
+use syn::{FnArg, ImplItem, ItemImpl, Pat, PathSegment, Signature, Token, Type, parse_quote};
 use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
@@ -74,6 +74,10 @@ impl FnKind {
 
         Ok(kind)
     }
+
+    fn maybe_await(&self) -> Option<syn::token::Await> {
+        matches!(self, Self::Async).then_some(syn::token::Await::default())
+    }
 }
 
 enum MethodKind {
@@ -137,6 +141,16 @@ impl Method {
 
         Ok(args)
     }
+
+    // TODO: factor in the sync path here
+    // (or in another place)
+    fn call_via_context(&self) -> Result<TokenStream> {
+        let name = self.name();
+        let args = self.args()?;
+        let maybe_await = self.fn_kind.maybe_await();
+
+        Ok(quote! { #name( #(#args)* ) #maybe_await  })
+    }
 }
 
 struct StaticDispatch {
@@ -146,34 +160,40 @@ struct StaticDispatch {
 
 impl StaticDispatch {
     // TODO: visibility as setting
-    fn new(name: Ident, impls: Vec<Path>) -> Result<(Self, TokenStream)> {
+    fn new(object_name: Ident, impls: Vec<Path>) -> Result<(Self, TokenStream)> {
         let variants: Vec<_> = impls
             .iter()
             .map(|x| path_ident(x).cloned())
             .collect::<Result<_>>()?;
 
         let content = quote! {
-            pub enum #name { #(
+            pub enum #object_name { #(
                 #variants(#impls))*
             }
         };
 
-        let this = Self { name, variants };
+        let this = Self {
+            name: object_name,
+            variants,
+        };
         Ok((this, content))
     }
 
-    fn dispatch_method(&self, method: Method) -> Result<TokenStream> {
-        let method_name = method.name();
-        let args = method.args()?;
+    fn dispatch_method(&self, method: &Method) -> Result<TokenStream> {
         let sig = &method.signature;
+        let call = method.call_via_context()?;
 
         let content = match method.kind() {
             MethodKind::Constructor => todo!("constructors are TBD"),
             MethodKind::Accessor => {
-                let branches = self.variants.iter().map(|v| {
-                    quote! { Self::#v(obj)
-                    => obj.#method_name( #(#args)* ) }
-                });
+                let branches: Vec<_> = self
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        quote! { Self::#v(obj)
+                        => obj.#call }
+                    })
+                    .collect();
 
                 quote! { #sig {
                     match self { #(#branches),* }
@@ -186,16 +206,14 @@ impl StaticDispatch {
 }
 
 struct InterfaceShape {
-    name: Ident,
     methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
     // TODO: assoc const, types
 }
 
 impl InterfaceShape {
-    fn new(name: Ident) -> Self {
+    fn new() -> Self {
         Self {
-            name,
             methods: Vec::new(),
             final_methods: Vec::new(),
         }
@@ -251,16 +269,30 @@ impl Parse for InterfaceAttrs {
     }
 }
 
+impl InterfaceAttrs {
+    fn resolve_static_impls(self, interface: &Ident) -> Vec<Path> {
+        match self.mode {
+            Mode::Dynamic => panic!("cannot resolve static impls in dynamic mode"),
+            Mode::Direct => self.paths.unwrap(),
+            Mode::FromMod => {
+                let mut paths = self.paths.unwrap();
+
+                for p in &mut paths {
+                    p.segments.push_value(PathSegment {
+                        ident: registered_module_object_marker(interface),
+                        arguments: syn::PathArguments::None,
+                    });
+                }
+                paths
+            }
+        }
+    }
+}
+
 const EXPORTED_META: &str = "meta";
 
-pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
-    ensure_empty_tokens!(
-        input.generics.params,
-        "Generic interfaces are not supported (yet)"
-    );
-
-    let mut shape = InterfaceShape::new(input.ident.clone());
-
+fn parse_shape(input: &mut ItemTrait) -> Result<InterfaceShape> {
+    let mut shape = InterfaceShape::new();
     let mut ret = Vec::new();
 
     for item in input.items.iter_mut() {
@@ -276,23 +308,67 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
     // This removes all methods that are not implementable
     retain_by_mask(&ret, &mut input.items);
 
-    // TODO: dispatch here
+    Ok(shape)
+}
 
-    let codegen_marker = interface_codegen_marker(&input.ident);
+pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
+    ensure_empty_tokens!(
+        input.generics.params,
+        "Generic interfaces are not supported (yet)"
+    );
+
+    let name = input.ident.clone();
+    let InterfaceShape {
+        methods,
+        final_methods,
+    } = parse_shape(&mut input)?;
+
+    // Meta
+
+    let codegen_marker = interface_codegen_marker(&name);
 
     let meta = InterfaceMeta {
-        mode: attrs.mode,
-        methods: shape
-            .methods
-            .into_iter()
-            .map(|x| (x.name().to_string(), x.fn_kind))
+        mode: attrs.mode.clone(),
+        methods: methods
+            .iter()
+            .map(|x| (x.name().to_string(), x.fn_kind.clone()))
             .collect(),
     };
 
     let exported_meta = export(format_ident!("{EXPORTED_META}"), ViaSerde(meta))?;
 
+    // Dispatch
+
+    let object_name = format_ident!("{name}Object");
+
+    // TODO: kill it with fire
+    let (dispatched_methods, object) = match attrs.mode.dispatch_kind() {
+        Dispatch::Dynamic => todo!(),
+        Dispatch::Static => {
+            let impls = attrs.resolve_static_impls(&name);
+            if impls.is_empty() {
+                return Ok(input.into_token_stream());
+            }
+            let (dispatcher, object) = StaticDispatch::new(object_name.clone(), impls)?;
+            let a: Vec<TokenStream> = methods
+                .iter()
+                .map(|x| dispatcher.dispatch_method(x))
+                .collect::<Result<_>>()?;
+
+            (a, object)
+        }
+    };
+
+    //
+
     let content = quote! {
         #input
+        #object
+
+        impl #object_name {
+            #(#dispatched_methods)*
+            #(#final_methods)*
+        }
 
         #[doc(hidden)]
         #[allow(non_camel_case)]
@@ -412,5 +488,10 @@ fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<To
         let as_implemented = FnKind::parse(&func.sig)?;
     }
 
-    todo!()
+    let content = quote! {
+        #signal
+        // TODO: syn-path trait, tag, associated error
+    };
+
+    Ok(content)
 }
