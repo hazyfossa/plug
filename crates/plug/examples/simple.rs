@@ -16,7 +16,7 @@ trait Test {
     fn test(&self) -> bool;
 }
 
-#[plug]
+// #[plug]
 impl Test for TestObject {
     fn test(&self) -> bool {
         true

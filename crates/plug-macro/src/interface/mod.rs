@@ -5,7 +5,7 @@ use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::parse::{Nothing, Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ItemImpl, Pat, Signature, Token, Type};
+use syn::{FnArg, ImplItem, ItemImpl, Pat, Signature, Token, Type, parse_quote};
 use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
@@ -76,75 +76,112 @@ impl FnKind {
     }
 }
 
-enum CallConvention {
-    /// fn() -> Value
-    Direct,
-
-    /// fn().await -> Value
-    Await,
+enum MethodKind {
+    Accessor,
+    Constructor,
 }
 
-impl FnKind {
-    fn call_convention(&self) -> CallConvention {
-        match self {
-            Self::Async => CallConvention::Await,
-            _ => CallConvention::Direct,
-        }
-    }
-}
-
-enum Discriminant {
-    // &self, &mut self, etc
-    Object,
-
-    // for methods that do not need
-    // object state
-    Tag,
-}
-
-impl Discriminant {
+impl MethodKind {
     fn parse(sig: &syn::Signature) -> Self {
         match sig.receiver() {
-            Some(_) => Self::Object,
-            None => Self::Tag,
+            Some(_) => Self::Accessor,
+            None => Self::Constructor,
         }
     }
 }
 
 struct Method {
-    name: Ident,
-    args: Many<Ident>,
-    kind: FnKind,
-    discriminant: Discriminant,
+    signature: syn::Signature,
+    fn_kind: FnKind,
 }
 
 impl Method {
-    fn parse(sig: &syn::Signature) -> Result<Self> {
-        let mut args: Many<Ident> = Vec::new().into();
+    // This function will modify the signature to be appropriate
+    // as part of a trait (hint), while storing a copy for dispatch
+    fn from_signature(sig: &mut syn::Signature) -> Result<Self> {
+        let this = Self {
+            signature: sig.clone(),
+            fn_kind: FnKind::parse(sig)?,
+        };
 
-        for arg in &sig.inputs {
+        sig.constness = None;
+
+        // TODO: box async
+
+        Ok(this)
+    }
+
+    fn kind(&self) -> MethodKind {
+        MethodKind::parse(&self.signature)
+    }
+
+    fn name(&self) -> &Ident {
+        &self.signature.ident
+    }
+
+    fn args(&self) -> Result<Vec<&Ident>> {
+        let mut args: Vec<&Ident> = Vec::new();
+
+        for arg in &self.signature.inputs {
             match arg {
                 FnArg::Receiver(_) => { /* handled by disciminant parse */ }
 
                 // TODO: this will become more complex when we add versioning
                 FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
-                    args.push(arg_p.ident.clone());
+                    args.push(&arg_p.ident);
                 }
 
                 other => bail!(other => "unsupported syntax"),
             }
         }
 
-        let name = sig.ident.clone();
-        let kind = FnKind::parse(sig)?;
-        let discriminant = Discriminant::parse(sig);
+        Ok(args)
+    }
+}
 
-        Ok(Self {
-            name,
-            args,
-            kind,
-            discriminant,
-        })
+struct StaticDispatch {
+    name: Ident,
+    variants: Vec<Ident>,
+}
+
+impl StaticDispatch {
+    // TODO: visibility as setting
+    fn new(name: Ident, impls: Vec<Path>) -> Result<(Self, TokenStream)> {
+        let variants: Vec<_> = impls
+            .iter()
+            .map(|x| path_ident(x).cloned())
+            .collect::<Result<_>>()?;
+
+        let content = quote! {
+            pub enum #name { #(
+                #variants(#impls))*
+            }
+        };
+
+        let this = Self { name, variants };
+        Ok((this, content))
+    }
+
+    fn dispatch_method(&self, method: Method) -> Result<TokenStream> {
+        let method_name = method.name();
+        let args = method.args()?;
+        let sig = &method.signature;
+
+        let content = match method.kind() {
+            MethodKind::Constructor => todo!("constructors are TBD"),
+            MethodKind::Accessor => {
+                let branches = self.variants.iter().map(|v| {
+                    quote! { Self::#v(obj)
+                    => obj.#method_name( #(#args)* ) }
+                });
+
+                quote! { #sig {
+                    match self { #(#branches),* }
+                } }
+            }
+        };
+
+        Ok(content)
     }
 }
 
@@ -177,13 +214,8 @@ impl InterfaceShape {
             return Ok(false);
         }
 
-        let method = Method::parse(&input.sig)?;
+        let method = Method::from_signature(&mut input.sig)?;
         self.methods.push(method);
-
-        // Rust does not support const fn in traits natively
-        // so we erase this after parsing
-        // const-ness will be restored as appropriate by dispatch impl
-        input.sig.constness = None;
 
         Ok(true)
     }
@@ -207,7 +239,10 @@ impl Parse for InterfaceAttrs {
                 syn::parenthesized!(content in input);
                 Some(content.parse()?)
             }
-            Mode::Dynamic => None,
+            Mode::Dynamic => {
+                let _marker = input.parse::<Token![dyn]>()?;
+                None
+            }
         };
 
         let paths = paths.map(|x| x.inner);
@@ -215,6 +250,8 @@ impl Parse for InterfaceAttrs {
         Ok(InterfaceAttrs { mode, paths })
     }
 }
+
+const EXPORTED_META: &str = "meta";
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
     ensure_empty_tokens!(
@@ -241,20 +278,27 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
 
     // TODO: dispatch here
 
+    let codegen_marker = interface_codegen_marker(&input.ident);
+
     let meta = InterfaceMeta {
         mode: attrs.mode,
         methods: shape
             .methods
             .into_iter()
-            .map(|x| (x.name.to_string(), x.kind))
+            .map(|x| (x.name().to_string(), x.fn_kind))
             .collect(),
     };
 
-    let exported_meta = export(interface_meta_marker(&shape.name), ViaSerde(meta))?;
+    let exported_meta = export(format_ident!("{EXPORTED_META}"), ViaSerde(meta))?;
 
     let content = quote! {
         #input
-        #exported_meta
+
+        #[doc(hidden)]
+        #[allow(non_camel_case)]
+        pub(crate) mod #codegen_marker {
+            #exported_meta
+        }
     };
 
     Ok(content)
@@ -262,16 +306,14 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
 
 // impls
 
-type Methods = HashMap<String, FnKind>;
-
 #[derive(Serialize, Deserialize)]
 struct InterfaceMeta {
     pub mode: Mode,
-    pub methods: Methods,
+    pub methods: HashMap<String, FnKind>,
 }
 
-fn interface_meta_marker(interface: &Ident) -> Ident {
-    format_ident!("__codegen_{interface}_meta")
+fn interface_codegen_marker(interface: &Ident) -> Ident {
+    format_ident!("__codegen_{interface}")
 }
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
@@ -310,7 +352,8 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         })
         .collect();
 
-    let meta_source = path_sibling(&interface, interface_meta_marker)?;
+    let mut meta = path_sibling(&interface, interface_codegen_marker)?;
+    meta.segments.push(parse_quote!(#EXPORTED_META));
 
     let ctx = Context {
         object,
@@ -318,7 +361,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         impl_methods: impl_functions,
     };
 
-    let continuation = with_import!(#simple meta_source => register_impl_inner(ctx))?;
+    let continuation = with_import!(#simple meta => register_impl_inner(ctx))?;
 
     Ok(quote! {
         #input
@@ -360,8 +403,6 @@ fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<To
     };
 
     let is_static = matches!(meta.mode.dispatch_kind(), Dispatch::Static);
-    let supports_const = is_static;
-    let supports_inline_async = is_static;
 
     for func in ctx.impl_methods.inner {
         let name = func.sig.ident.to_string();
