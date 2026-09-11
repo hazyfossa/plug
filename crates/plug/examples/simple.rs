@@ -2,7 +2,8 @@ use plug::plug;
 
 #[plug(implement::TestImpl)]
 trait Test {
-    fn test(&self) -> bool;
+    fn foo(&self) -> bool;
+    const fn bar(&self) -> u8;
 }
 
 mod implement {
@@ -21,23 +22,18 @@ mod implement {
 
     #[plug]
     impl Test for TestImpl {
-        fn test(&self) -> bool {
+        fn foo(&self) -> bool {
             true
+        }
+
+        const fn bar(&self) -> u8 {
+            0
         }
     }
 }
 
-// impl Init for TestObject::State {
-//     type Error = std::convert::Infallible;
-//     async fn init(config: &Self::Config) -> Result<Self, Self::Error> {
-//         Ok(Self {
-//             c: config.a.len() + config.b.len(),
-//         })
-//     }
-// }
-
-fn do_something(input: TestObject) {
-    input.test();
+const fn do_something(input: TestObject) {
+    input.bar();
 }
 
 fn main() {}

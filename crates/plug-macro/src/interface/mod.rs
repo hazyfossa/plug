@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::parse::{Nothing, Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ItemImpl, Pat, PathSegment, Signature, Token, Type};
+use syn::{
+    Block, FnArg, ImplItem, ImplItemFn, ItemImpl, Pat, PathSegment, Signature, Token, Type,
+    Visibility, parse_quote,
+};
 use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
@@ -14,8 +17,9 @@ use crate::{
     meta_passing::{export, with_import},
     parse::{Attrs, Many, path_extend, path_ident, path_sibling},
     retain_by_mask,
-    syn_serde::ViaSerde,
 };
+
+//
 
 #[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
 pub enum Mode {
@@ -25,6 +29,15 @@ pub enum Mode {
     Dynamic,
 
     Direct,
+}
+
+impl Mode {
+    fn dispatch_kind(&self) -> Dispatch {
+        match self {
+            Self::Dynamic => Dispatch::Dynamic,
+            _ => Dispatch::Static,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -38,205 +51,9 @@ enum Dispatch {
     Dynamic,
 }
 
-impl Mode {
-    fn dispatch_kind(&self) -> Dispatch {
-        match self {
-            Self::Dynamic => Dispatch::Dynamic,
-            _ => Dispatch::Static,
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-enum FnKind {
-    Regular,
-    Async { sync_path: bool },
-    Const,
-}
-
-impl FnKind {
-    fn parse(sig: &syn::Signature) -> Result<Self> {
-        let is_async = sig.asyncness.is_some();
-        let is_const = sig.constness.is_some();
-
-        if is_async && is_const {
-            bail!(sig.constness.unwrap() => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            // TODO: sync path optimization
-            Self::Async { sync_path: false }
-        } else if is_const {
-            Self::Const
-        } else {
-            Self::Regular
-        };
-
-        Ok(kind)
-    }
-}
-
-enum MethodKind {
-    Accessor,
-    Constructor,
-}
-
-impl MethodKind {
-    fn parse(sig: &syn::Signature) -> Self {
-        match sig.receiver() {
-            Some(_) => Self::Accessor,
-            None => Self::Constructor,
-        }
-    }
-}
-
-struct Method {
-    signature: syn::Signature,
-    fn_kind: FnKind,
-}
-
-impl Method {
-    // This function will modify the signature to be appropriate
-    // as part of a trait (hint), while storing a copy for dispatch
-    fn from_signature(sig: &mut syn::Signature) -> Result<Self> {
-        let this = Self {
-            signature: sig.clone(),
-            fn_kind: FnKind::parse(sig)?,
-        };
-
-        sig.constness = None;
-
-        // TODO: box async
-
-        Ok(this)
-    }
-
-    fn kind(&self) -> MethodKind {
-        MethodKind::parse(&self.signature)
-    }
-
-    fn name(&self) -> &Ident {
-        &self.signature.ident
-    }
-
-    fn args(&self) -> Result<Vec<&Ident>> {
-        let mut args: Vec<&Ident> = Vec::new();
-
-        for arg in &self.signature.inputs {
-            match arg {
-                FnArg::Receiver(_) => { /* handled by disciminant parse */ }
-
-                // TODO: this will become more complex when we add versioning
-                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
-                    args.push(&arg_p.ident);
-                }
-
-                other => bail!(other => "unsupported syntax"),
-            }
-        }
-
-        Ok(args)
-    }
-
-    // TODO: factor in the sync path here
-    // (or in another place)
-    fn call_via_context(&self) -> Result<TokenStream> {
-        let name = self.name();
-        let args = self.args()?;
-
-        let content = match &self.fn_kind {
-            FnKind::Async { sync_path: true } => todo!("sync path optimization"),
-            FnKind::Async { sync_path: false } => quote! { #name( #(#args)* ).await },
-            _direct_call => quote! { #name( #(#args)* ) },
-        };
-
-        Ok(content)
-    }
-}
-
-struct StaticDispatch {
-    name: Ident,
-    variants: Vec<Ident>,
-}
-
-impl StaticDispatch {
-    // TODO: visibility as setting
-    fn new(object_name: Ident, impls: Vec<Path>) -> Result<(Self, TokenStream)> {
-        let variants: Vec<_> = impls
-            .iter()
-            .map(|x| path_ident(x).cloned())
-            .collect::<Result<_>>()?;
-
-        let content = quote! {
-            pub enum #object_name { #(
-                #variants(#impls))*
-            }
-        };
-
-        let this = Self {
-            name: object_name,
-            variants,
-        };
-        Ok((this, content))
-    }
-
-    fn dispatch_method(&self, method: &Method) -> Result<TokenStream> {
-        let sig = &method.signature;
-        let call = method.call_via_context()?;
-
-        let content = match method.kind() {
-            MethodKind::Constructor => todo!("constructors are TBD"),
-            MethodKind::Accessor => {
-                let branches: Vec<_> = self
-                    .variants
-                    .iter()
-                    .map(|v| {
-                        quote! { Self::#v(obj)
-                        => obj.#call }
-                    })
-                    .collect();
-
-                quote! { #sig {
-                    match self { #(#branches),* }
-                } }
-            }
-        };
-
-        Ok(content)
-    }
-}
-
-struct InterfaceShape {
-    methods: Vec<Method>,
-    final_methods: Vec<TraitItemFn>,
-    // TODO: assoc const, types
-}
-
-impl InterfaceShape {
-    fn new() -> Self {
-        Self {
-            methods: Vec::new(),
-            final_methods: Vec::new(),
-        }
-    }
-
-    // Returns whether the method is implementable
-    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
-        let mut attrs = Attrs::extract(&mut input.attrs);
-
-        // TODO: modifers that we want but syn doesn't parse: final
-        // for now, we substitute via custom attr
-        let is_final = attrs.select_one(["final"])?.is_some();
-
-        if is_final {
-            self.final_methods.push(input.clone());
-            return Ok(false);
-        }
-
-        let method = Method::from_signature(&mut input.sig)?;
-        self.methods.push(method);
-
-        Ok(true)
+impl Dispatch {
+    fn supports_const(&self) -> bool {
+        matches!(self, Self::Static)
     }
 }
 
@@ -290,26 +107,286 @@ impl InterfaceAttrs {
     }
 }
 
-const EXPORTED_META: &str = "meta";
+//
 
-fn parse_shape(input: &mut ItemTrait) -> Result<InterfaceShape> {
-    let mut shape = InterfaceShape::new();
-    let mut ret = Vec::new();
+#[derive(Clone, Serialize, Deserialize)]
+enum FnKind {
+    Regular,
+    Async { sync_path: bool },
+    Const,
+}
 
-    for item in input.items.iter_mut() {
-        match item {
-            TraitItem::Fn(f) => ret.push(shape.register_method(f)?),
-            TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
-            TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
-            TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
-            x => bail!(x => "This syntax is not supported inside interfaces"),
+impl FnKind {
+    fn parse(sig: &syn::Signature) -> Result<Self> {
+        let is_async = sig.asyncness.is_some();
+        let is_const = sig.constness.is_some();
+
+        if is_async && is_const {
+            bail!(sig.constness.unwrap() => "constant async methods are impossible")
+        }
+
+        let kind = if is_async {
+            // TODO: sync path optimization
+            Self::Async { sync_path: false }
+        } else if is_const {
+            Self::Const
+        } else {
+            Self::Regular
+        };
+
+        Ok(kind)
+    }
+}
+
+enum MethodKind {
+    Accessor,
+    Constructor,
+}
+
+impl MethodKind {
+    fn parse(sig: &syn::Signature) -> Self {
+        match sig.receiver() {
+            Some(_) => Self::Accessor,
+            None => Self::Constructor,
+        }
+    }
+}
+
+struct Method {
+    dispatch_signature: syn::Signature,
+    fn_kind: FnKind,
+}
+
+impl Method {
+    // This function will leave the signature as appropriate for a trait item
+    // while storing an internal copy for dispatch
+    fn parse(sig: &mut Signature) -> Result<Self> {
+        let fn_kind = FnKind::parse(sig)?;
+
+        // Rust does not support const fn in trait natively
+        // Const-ness will be restored by dispatcher
+        let dispatch_signature = sig.clone();
+        sig.constness = None;
+
+        Ok(Self {
+            dispatch_signature,
+            fn_kind,
+        })
+    }
+
+    fn kind(&self) -> MethodKind {
+        MethodKind::parse(&self.dispatch_signature)
+    }
+
+    fn name(&self) -> Ident {
+        let ident = &self.dispatch_signature.ident;
+
+        match self.fn_kind {
+            FnKind::Const => format_ident!("__inherent_{ident}"),
+            _ => ident.clone(),
         }
     }
 
-    // This removes all methods that are not implementable
-    retain_by_mask(&ret, &mut input.items);
+    fn args(&self) -> Result<Vec<&Ident>> {
+        let mut args: Vec<&Ident> = Vec::new();
 
-    Ok(shape)
+        for arg in &self.dispatch_signature.inputs {
+            match arg {
+                FnArg::Receiver(_) => { /* handled by disciminant parse */ }
+
+                // TODO: this will become more complex when we add versioning
+                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
+                    args.push(&arg_p.ident);
+                }
+
+                other => bail!(other => "unsupported syntax"),
+            }
+        }
+
+        Ok(args)
+    }
+
+    fn call_via_context(&self) -> Result<TokenStream> {
+        let name = self.name();
+        let args = self.args()?;
+
+        let content = match &self.fn_kind {
+            FnKind::Async { sync_path: true } => todo!("sync path optimization"),
+            FnKind::Async { sync_path: false } => quote! { #name( #(#args)* ).await },
+            _direct_call => quote! { #name( #(#args)* ) },
+        };
+
+        Ok(content)
+    }
+
+    fn call_via_self(&self) -> Result<TokenStream> {
+        let provider = match self.kind() {
+            MethodKind::Constructor => quote! { Self:: },
+            MethodKind::Accessor => quote! { self. },
+        };
+
+        let call = self.call_via_context()?;
+
+        let content = quote! { #provider #call };
+        Ok(content)
+    }
+}
+
+//
+
+struct InterfaceShape {
+    name: Ident,
+    attrs: InterfaceAttrs,
+
+    dispatchable_methods: Vec<Method>,
+    final_methods: Vec<TraitItemFn>,
+
+    // subsets of dispatchable
+    variable_async_methods: HashSet<Ident>,
+    const_methods: HashSet<Ident>,
+    // TODO: assoc const, types
+}
+
+impl InterfaceShape {
+    fn new(name: Ident, attrs: InterfaceAttrs) -> Self {
+        Self {
+            name,
+            attrs,
+            dispatchable_methods: Vec::new(),
+            variable_async_methods: HashSet::new(),
+            const_methods: HashSet::new(),
+            final_methods: Vec::new(),
+        }
+    }
+
+    fn parse(input: &mut ItemTrait, attrs: InterfaceAttrs) -> Result<Self> {
+        let mut this = Self::new(input.ident.clone(), attrs);
+        let mut mask = Vec::new();
+
+        for item in input.items.iter_mut() {
+            match item {
+                TraitItem::Fn(f) => mask.push(this.register_method(f)?),
+                TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
+                TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
+                TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
+                x => bail!(x => "This syntax is not supported inside interfaces"),
+            }
+        }
+
+        // This removes all methods that are not implementable
+        retain_by_mask(&mask, &mut input.items);
+
+        Ok(this)
+    }
+
+    // Returns whether the method is implementable
+    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
+        let mut attrs = Attrs::extract(&mut input.attrs);
+
+        // TODO: modifers that we want but syn doesn't parse: final
+        // for now, we substitute via custom attr
+        let is_final = attrs.select_one(["final"])?.is_some();
+
+        if is_final {
+            self.final_methods.push(input.clone());
+            return Ok(false);
+        }
+
+        let method = Method::parse(&mut input.sig)?;
+        self.dispatchable_methods.push(method);
+
+        Ok(true)
+    }
+
+    fn export_meta(&self) -> Result<TokenStream> {
+        // TODO: less copies
+        let data = InterfaceMeta {
+            mode: self.attrs.mode.clone(),
+            const_methods: self.const_methods.clone().into(),
+            variable_async_methods: self.variable_async_methods.clone().into(),
+        };
+
+        let codegen_marker = interface_codegen_marker(&self.name);
+        let exported_meta = export(format_ident!("{EXPORTED_META}"), data)?;
+
+        let content = quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case)]
+            pub(crate) mod #codegen_marker {
+                #exported_meta
+            }
+        };
+
+        Ok(content)
+    }
+}
+
+trait Dispatcher: Sized {
+    type Impls;
+    fn new_interface(
+        object_vis: Visibility,
+        object_name: Ident,
+        impls: Self::Impls,
+    ) -> Result<(Self, TokenStream)>;
+
+    fn dispatch_method(&self, method: &Method) -> Result<TokenStream>;
+}
+
+struct StaticDispatch {
+    name: Ident,
+    variants: Vec<Ident>,
+}
+
+impl Dispatcher for StaticDispatch {
+    type Impls = Vec<Path>;
+
+    fn new_interface(
+        object_vis: Visibility,
+        object_name: Ident,
+        impls: Self::Impls,
+    ) -> Result<(Self, TokenStream)> {
+        let variants: Vec<_> = impls
+            .iter()
+            .map(|x| path_ident(x).cloned())
+            .collect::<Result<_>>()?;
+
+        let content = quote! {
+            #object_vis enum #object_name { #(
+                #variants(#impls))*
+            }
+        };
+
+        let this = Self {
+            name: object_name,
+            variants,
+        };
+        Ok((this, content))
+    }
+
+    fn dispatch_method(&self, method: &Method) -> Result<TokenStream> {
+        let sig = &method.dispatch_signature;
+        let call = method.call_via_context()?;
+
+        let content = match method.kind() {
+            MethodKind::Constructor => todo!("constructors are TBD"),
+            MethodKind::Accessor => {
+                let branches: Vec<_> = self
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        quote! { Self::#v(obj)
+                        => obj.#call }
+                    })
+                    .collect();
+
+                quote! { #sig {
+                    match self { #(#branches),* }
+                } }
+            }
+        };
+
+        Ok(content)
+    }
 }
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
@@ -318,75 +395,64 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
         "Generic interfaces are not supported (yet)"
     );
 
-    let name = input.ident.clone();
-    let InterfaceShape {
-        methods,
-        final_methods,
-    } = parse_shape(&mut input)?;
-
-    // Meta
-
-    let codegen_marker = interface_codegen_marker(&name);
-
-    let meta = InterfaceMeta {
-        mode: attrs.mode.clone(),
-        methods: methods
-            .iter()
-            .map(|x| (x.name().to_string(), x.fn_kind.clone()))
-            .collect(),
-    };
-
-    let exported_meta = export(format_ident!("{EXPORTED_META}"), ViaSerde(meta))?;
+    let shape = InterfaceShape::parse(&mut input, attrs)?;
+    let meta = shape.export_meta()?;
 
     // Dispatch
 
+    let name = shape.name;
+    let object_vis = input.vis.clone();
     let object_name = format_ident!("{name}Object");
 
-    // TODO: kill it with fire
-    let (dispatched_methods, object) = match attrs.mode.dispatch_kind() {
+    let (dispatcher, object_code) = match shape.attrs.mode.dispatch_kind() {
         Dispatch::Dynamic => todo!(),
         Dispatch::Static => {
-            let impls = attrs.resolve_static_impls(&name);
+            let impls = shape.attrs.resolve_static_impls(&name);
+
+            // Saves downstream code from checking this edge-case
+            // thus saving some codegen from inappropriate-zero-token bugs
+            // TODO: consider panicking if this happens and flag "todo" is unset
             if impls.is_empty() {
                 return Ok(input.into_token_stream());
             }
-            let (dispatcher, object) = StaticDispatch::new(object_name.clone(), impls)?;
-            let a: Vec<TokenStream> = methods
-                .iter()
-                .map(|x| dispatcher.dispatch_method(x))
-                .collect::<Result<_>>()?;
 
-            (a, object)
+            StaticDispatch::new_interface(object_vis, object_name.clone(), impls)?
         }
     };
+
+    let dispatched_methods: Vec<TokenStream> = shape
+        .dispatchable_methods
+        .iter()
+        .map(|x| dispatcher.dispatch_method(x))
+        .collect::<Result<_>>()?;
+
+    let final_methods = &shape.final_methods;
 
     //
 
     let content = quote! {
         #input
-        #object
+        #object_code // TODO: allow dispatchers to also write to __codegen (relevant for dyn)
+        #meta
 
         impl #object_name {
             #(#dispatched_methods)*
             #(#final_methods)*
-        }
-
-        #[doc(hidden)]
-        #[allow(non_camel_case)]
-        pub(crate) mod #codegen_marker {
-            #exported_meta
         }
     };
 
     Ok(content)
 }
 
-// impls
+// Interface meta is imported by impls
 
-#[derive(Serialize, Deserialize)]
+const EXPORTED_META: &str = "meta";
+
+#[derive(Parse, ToTokens)]
 struct InterfaceMeta {
-    pub mode: Mode,
-    pub methods: HashMap<String, FnKind>,
+    mode: Mode,
+    const_methods: Many<Ident, HashSet<Ident>>,
+    variable_async_methods: Many<Ident, HashSet<Ident>>,
 }
 
 fn interface_codegen_marker(interface: &Ident) -> Ident {
@@ -395,6 +461,96 @@ fn interface_codegen_marker(interface: &Ident) -> Ident {
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
     format_ident!("registered {interface} impl for this module")
+}
+
+struct Impl {
+    interface: Path,
+    object: Path,
+    inherents: Vec<TokenStream>,
+    methods: Vec<ImplementedMethod>,
+}
+
+impl Impl {
+    fn new(interface: Path, object: Path) -> Self {
+        Self {
+            interface,
+            object,
+            inherents: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+
+    // fn parse(input: &mut ImplItem) -> Result<Self> {}
+
+    fn add_inherent_fn(&mut self, mut func: ImplItemFn) {
+        func.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
+        func.attrs.push(parse_quote!(#[doc(hidden)]));
+        func.sig.ident = format_ident!("__inherent_{}", &func.sig.ident);
+
+        self.inherents.push(func.to_token_stream());
+    }
+
+    fn register_method(&mut self, func: &mut ImplItemFn) -> Result<()> {
+        let method = Method::parse(&mut func.sig)?;
+
+        if matches!(method.fn_kind, FnKind::Const) {
+            // TODO: here we undo what Method::parse did. Reconsider Method::parse.
+            let const_fn = {
+                let mut x = func.clone();
+                x.sig.constness = Some(parse_quote!(const));
+                x
+            };
+
+            self.add_inherent_fn(const_fn);
+
+            let call_inherent = method.call_via_context()?;
+            func.block = parse_quote!({ self.#call_inherent });
+        };
+
+        Ok(())
+    }
+
+    fn codegen(self) -> Result<TokenStream> {
+        let object = self.object.clone();
+        let inherents = self.inherents.clone();
+
+        let cons = continue_with_interface_meta(Context {
+            object: self.object,
+            interface: self.interface,
+            impl_methods: self.methods.into(),
+        })?;
+
+        let content = quote! {
+            #cons
+
+            impl #object {
+                #(#inherents)*
+            }
+        };
+
+        Ok(content)
+    }
+}
+
+#[derive(Parse, ToTokens)]
+struct Context {
+    object: Path,
+    interface: Path,
+    impl_methods: Many<ImplementedMethod>,
+}
+
+fn continue_with_interface_meta(ctx: Context) -> Result<TokenStream> {
+    let mut meta = path_sibling(&ctx.interface, interface_codegen_marker)?;
+    path_extend(&mut meta, format_ident!("{EXPORTED_META}"));
+
+    with_import!(#simple meta => register_impl_inner(ctx))
+}
+
+// TODO: this only exists to provide spans, otherwise could be just `Method`
+#[derive(Parse, ToTokens)]
+struct ImplementedMethod {
+    attrs: Attrs,
+    sig: Signature,
 }
 
 pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
@@ -412,55 +568,24 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         other => bail!(other => "Interfaces can only be implemented on objects"),
     };
 
-    ensure_empty_tokens!(
-        input.generics.params,
-        "Generic interfaces are not supported (yet)"
-    );
+    let mut impl_ = Impl::new(interface, object);
 
-    let impl_functions = input
-        .items
-        .iter_mut()
-        .filter_map(|x| match x {
-            ImplItem::Fn(func) => Some(ImplementedMethod {
-                attrs: Attrs::extract(&mut func.attrs),
-                sig: func.sig.clone(),
-            }),
-            _ => None,
-        })
-        .collect();
+    // TODO: simplify
 
-    let mut meta = path_sibling(&interface, interface_codegen_marker)?;
-    path_extend(&mut meta, format_ident!("{EXPORTED_META}"));
+    for item in &mut input.items {
+        match item {
+            ImplItem::Fn(func) => impl_.register_method(func)?,
+            _ => (),
+        }
+    }
 
-    let ctx = Context {
-        object,
-        interface,
-        impl_methods: impl_functions,
-    };
-
-    let continuation = with_import!(#simple meta => register_impl_inner(ctx))?;
-
-    Ok(quote! {
-        #input
-        #continuation
-    })
+    let codegen = impl_.codegen()?;
+    let content = quote! { #input #codegen };
+    Ok(content)
 }
 
-#[derive(Parse, ToTokens)]
-struct Context {
-    object: Path,
-    interface: Path,
-    impl_methods: Many<ImplementedMethod>,
-}
-
-#[derive(Parse, ToTokens)]
-struct ImplementedMethod {
-    attrs: Attrs,
-    sig: Signature,
-}
-
-fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<TokenStream> {
-    let meta = meta.0;
+fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream> {
+    let object = ctx.object;
 
     // Signal is the thing that allows us to gather implementations
     let signal = match meta.mode {
@@ -469,29 +594,32 @@ fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<To
             let interface = path_ident(&ctx.interface)?;
             let marker = registered_module_object_marker(interface);
 
-            let object = ctx.object;
-
             Some(quote! {
                 #[doc(hidden)]
                 type #marker = #object;
             })
         }
-        Mode::Dynamic => todo!(),
+        Mode::Dynamic => todo!("dyn registration"),
     };
 
-    let is_static = matches!(meta.mode.dispatch_kind(), Dispatch::Static);
+    for method in ctx.impl_methods.inner {
+        let ImplementedMethod { attrs, sig, .. } = method;
 
-    for func in ctx.impl_methods.inner {
-        let name = func.sig.ident.to_string();
-        // TODO: rustc already checks whether the method exists as part of trait resolution
-        // we should instead return Ok("") here instead of unwrap
-        let as_defined = meta.methods.get(&name).unwrap();
-        let as_implemented = FnKind::parse(&func.sig)?;
+        if meta.const_methods.inner.contains(&sig.ident) {
+            if sig.constness.is_none() {
+                bail!(sig.ident => "function must be const")
+            }
+        }
+
+        if meta.variable_async_methods.inner.contains(&sig.ident) {
+            let _needed_here = attrs;
+            todo!("variable async path");
+        };
     }
 
+    // TODO: sync-path trait, associated error
     let content = quote! {
         #signal
-        // TODO: sync-path trait, tag, associated error
     };
 
     Ok(content)
