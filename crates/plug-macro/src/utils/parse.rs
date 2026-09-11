@@ -1,7 +1,4 @@
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
@@ -53,34 +50,36 @@ where
     }
 }
 
-impl<T, C> Deref for Many<T, C> {
-    type Target = C;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+// Bracketed
+
+pub struct Bracketed<T> {
+    pub inner: T,
+}
+
+impl<T> From<T> for Bracketed<T> {
+    fn from(value: T) -> Self {
+        Self { inner: value }
     }
 }
 
-impl<T, C> DerefMut for Many<T, C> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-// Tokens
-
-pub struct Tokens(pub TokenStream);
-
-impl Parse for Tokens {
-    fn parse(input: ParseStream) -> Result<Self> {
+impl<T> Parse for Bracketed<T>
+where
+    T: Parse,
+{
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
         let content;
         syn::bracketed!(content in input);
-        content.parse().map(Self)
+        let inner = content.parse()?;
+        Ok(Self { inner })
     }
 }
 
-impl ToTokens for Tokens {
+impl<T> ToTokens for Bracketed<T>
+where
+    T: ToTokens,
+{
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let this = &self.0;
+        let this = &self.inner;
         tokens.append_all(quote! { [#this] });
     }
 
@@ -88,10 +87,13 @@ impl ToTokens for Tokens {
     where
         Self: Sized,
     {
-        let this = &self.0;
+        let this = &self.inner;
         quote! { [#this] }
     }
 }
+
+// Tokens
+pub type Tokens = Bracketed<TokenStream>;
 
 // Generic span monad
 
@@ -146,7 +148,8 @@ pub struct Attrs(Many<MetaList>);
 impl Parse for Attrs {
     fn parse(input: ParseStream) -> Result<Self> {
         // TODO
-        input.parse().map(Self)
+        // input.parse().map(Self)
+        Ok(Self(Many::from(Vec::new())))
     }
 }
 
@@ -178,6 +181,7 @@ impl Attrs {
 
         let mut matches = self
             .0
+            .inner
             .extract_if(.., |attr| flags.iter().any(|flag| attr.path.is_ident(flag)));
 
         let ret = match matches.next() {
@@ -274,4 +278,11 @@ pub fn path_sibling(source: &Path, f: impl Fn(&Ident) -> Ident) -> Result<Path> 
     *ident = f(ident);
 
     Ok(path)
+}
+
+pub fn path_extend(path: &mut Path, ident: Ident) {
+    path.segments.push(syn::PathSegment {
+        ident,
+        arguments: syn::PathArguments::None,
+    })
 }

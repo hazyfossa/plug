@@ -12,7 +12,7 @@ pub trait Object {
 pub trait Init: Object + Sized {
     type Error; // TODO: impl-associated errors, fallback to dynamic
 
-    async fn init(config: &Self::Config) -> Routine<Result<Self, Self::Error>>;
+    fn init(config: &Self::Config) -> Routine<Result<Self, Self::Error>>;
 }
 
 #[allow(type_alias_bounds)]

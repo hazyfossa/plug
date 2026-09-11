@@ -19,7 +19,7 @@ mod implement {
         c: u32,
     }
 
-    // #[plug]
+    #[plug]
     impl Test for TestImpl {
         fn test(&self) -> bool {
             true

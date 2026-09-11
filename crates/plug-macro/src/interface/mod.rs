@@ -5,15 +5,14 @@ use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
 use syn::parse::{Nothing, Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ItemImpl, Pat, PathSegment, Signature, Token, Type, parse_quote};
+use syn::{FnArg, ImplItem, ItemImpl, Pat, PathSegment, Signature, Token, Type};
 use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
-use crate::parse::path_ident;
 use crate::{
     bail, ensure_empty_tokens,
     meta_passing::{export, with_import},
-    parse::{Attrs, Many, path_sibling},
+    parse::{Attrs, Many, path_extend, path_ident, path_sibling},
     retain_by_mask,
     syn_serde::ViaSerde,
 };
@@ -51,7 +50,7 @@ impl Mode {
 #[derive(Clone, Serialize, Deserialize)]
 enum FnKind {
     Regular,
-    Async,
+    Async { sync_path: bool },
     Const,
 }
 
@@ -65,7 +64,8 @@ impl FnKind {
         }
 
         let kind = if is_async {
-            Self::Async
+            // TODO: sync path optimization
+            Self::Async { sync_path: false }
         } else if is_const {
             Self::Const
         } else {
@@ -73,10 +73,6 @@ impl FnKind {
         };
 
         Ok(kind)
-    }
-
-    fn maybe_await(&self) -> Option<syn::token::Await> {
-        matches!(self, Self::Async).then_some(syn::token::Await::default())
     }
 }
 
@@ -147,9 +143,14 @@ impl Method {
     fn call_via_context(&self) -> Result<TokenStream> {
         let name = self.name();
         let args = self.args()?;
-        let maybe_await = self.fn_kind.maybe_await();
 
-        Ok(quote! { #name( #(#args)* ) #maybe_await  })
+        let content = match &self.fn_kind {
+            FnKind::Async { sync_path: true } => todo!("sync path optimization"),
+            FnKind::Async { sync_path: false } => quote! { #name( #(#args)* ).await },
+            _direct_call => quote! { #name( #(#args)* ) },
+        };
+
+        Ok(content)
     }
 }
 
@@ -429,7 +430,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         .collect();
 
     let mut meta = path_sibling(&interface, interface_codegen_marker)?;
-    meta.segments.push(parse_quote!(#EXPORTED_META));
+    path_extend(&mut meta, format_ident!("{EXPORTED_META}"));
 
     let ctx = Context {
         object,
@@ -490,7 +491,7 @@ fn register_impl_inner(ctx: Context, meta: ViaSerde<InterfaceMeta>) -> Result<To
 
     let content = quote! {
         #signal
-        // TODO: syn-path trait, tag, associated error
+        // TODO: sync-path trait, tag, associated error
     };
 
     Ok(content)

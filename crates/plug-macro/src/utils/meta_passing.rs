@@ -1,16 +1,21 @@
 use std::{
     collections::HashMap,
+    str::FromStr,
     sync::{LazyLock, RwLock},
 };
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{Ident, LitStr, Path, Result, parse::Parse, parse_quote};
+use syn::{
+    Ident, LitStr, Path, Result, Token,
+    parse::{Parse, ParseStream},
+    parse_quote,
+};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{
     bail,
-    parse::{Many, Tokens},
+    parse::{Bracketed, Many, Tokens},
 };
 
 fn random_string() -> Result<String> {
@@ -25,8 +30,8 @@ fn random_string() -> Result<String> {
 pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
     let content = quote! {
         macro_rules! #marker {
-            ($($m:tt)*) => {
-                ::plug_macro::__import_advance!([#input], $($m)* );
+            ([$($other_imports:tt)*] $($data:tt)*) => {
+                ::plug_macro::__import_advance!([[#input], $($other_imports)*] $($data)* );
             };
         }
 
@@ -88,48 +93,81 @@ impl CallbackRegistry {
 pub static CB: LazyLock<CallbackRegistry> = LazyLock::new(|| CallbackRegistry::new());
 
 #[derive(Parse, ToTokens)]
-pub struct ImportChain {
-    got: Many<Tokens>,
-    remaining_sources: Many<Path>,
+struct ImportContinuation {
     callback_token: LitStr,
     passed: Tokens,
+}
+
+// #[derive(Parse, ToTokens)]
+pub struct ImportChain {
+    got: Bracketed<Many<Tokens>>,
+    remaining_sources: Bracketed<Many<Path>>,
+    cons: Bracketed<ImportContinuation>,
+}
+
+impl ::syn::parse::Parse for ImportChain {
+    fn parse(__input: ::syn::parse::ParseStream) -> ::syn::Result<Self> {
+        let got = __input.parse()?;
+        let remaining_sources = __input.parse()?;
+
+        let cons = __input.parse()?;
+
+        ::syn::Result::Ok(Self {
+            got,
+            remaining_sources,
+            cons,
+        })
+    }
+}
+impl ::quote::ToTokens for ImportChain {
+    fn to_tokens(&self, tokens: &mut ::proc_macro2::TokenStream) {
+        let Self {
+            got,
+            remaining_sources,
+            cons,
+        } = self;
+        {
+            got.to_tokens(tokens);
+            remaining_sources.to_tokens(tokens);
+            cons.to_tokens(tokens);
+        }
+    }
 }
 
 impl ImportChain {
     fn new(sources: Vec<Path>, callback_token: CallbackToken, pass: TokenStream) -> Self {
         Self {
-            got: Vec::new().into(),
-            remaining_sources: sources.into(),
-            callback_token: parse_quote!(#callback_token),
-            passed: Tokens(pass),
+            got: Many::from(Vec::new()).into(),
+            remaining_sources: Many::from(sources).into(),
+            cons: ImportContinuation {
+                callback_token: parse_quote!(#callback_token),
+                passed: pass.into(),
+            }
+            .into(),
         }
     }
 }
 
 // TODO: non-empty case can be outlined as declarative macro
 pub fn import_advance(mut chain: ImportChain) -> Result<TokenStream> {
-    if chain.remaining_sources.is_empty() {
-        let ImportChain {
-            got,
-            callback_token,
-            passed,
-            ..
-        } = chain;
+    let sources = &mut chain.remaining_sources.inner.inner;
+    match &mut sources.is_empty() {
+        true => {
+            let cons = chain.cons.inner;
 
-        let imported = got.inner.into_iter().map(|x| x.0).collect();
-        let inner = passed.0;
+            let aux = cons.passed.inner;
+            let callback_token = cons.callback_token;
+            let imported = chain.got.inner.inner.into_iter().map(|x| x.inner).collect();
 
-        let callback = CB.get_callback(callback_token.value())?;
+            let callback = CB.get_callback(callback_token.value())?;
+            callback(RawImport { imported, aux })
+        }
+        false => {
+            // NOTE: this unwrap is guarded by is_empty check above
+            let source = sources.pop().unwrap();
 
-        callback(RawImport {
-            imported,
-            aux: inner,
-        })
-    } else {
-        // unwrap is guarded by empty check above
-        let source = chain.remaining_sources.inner.pop().unwrap();
-
-        Ok(quote! { #source!(#chain); })
+            Ok(quote! { #source!(#chain); })
+        }
     }
 }
 
