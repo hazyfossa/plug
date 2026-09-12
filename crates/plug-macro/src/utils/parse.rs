@@ -1,8 +1,8 @@
+#![allow(dead_code)]
 use std::marker::PhantomData;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
-use serde::{Deserialize, Serialize};
 use syn::{
     Attribute, Ident, Meta, MetaList, Path, Result, Token,
     parse::{Parse, ParseStream},
@@ -10,6 +10,8 @@ use syn::{
     spanned::Spanned,
 };
 use syn_derive::ToTokens;
+
+use crate::{bail, ensure_empty_tokens};
 
 // Many
 
@@ -98,11 +100,9 @@ pub type Tokens = Bracketed<TokenStream>;
 
 // Generic span monad
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct WithSpan<T> {
     inner: T,
-
-    #[cfg_attr(feature = "meta-passing", serde(skip))]
     span: Option<Span>,
 }
 
@@ -202,64 +202,7 @@ impl Attrs {
             Ok(Some(ret))
         }
     }
-
-    pub fn select_tokenum<T: TokEnum>(&mut self) -> Result<Option<WithSpan<T>>> {
-        self.select_one(T::all_states())?
-            .map(|flag| T::from_ident(&flag).map(|value| WithSpan::new(value, flag.span())))
-            .transpose()
-    }
 }
-
-// token enum
-// TODO: non-ident reprs
-
-pub trait TokEnum: Parse {
-    fn from_ident(ident: &syn::Ident) -> syn::Result<Self>;
-    fn all_states() -> impl IntoIterator<Item = &'static str>;
-}
-
-macro_rules! tokenum {
-    (
-        $(#[$($attr:meta)*])*
-        $vis:vis enum $name:ident {
-            $(
-                $(#[$($fattr:meta)*])*
-                $field:ident $(= $str:literal)?
-            ),*
-            $(,)?
-        }
-) => {
-        $(#[$($attr)*])*
-        $vis enum $name {
-            $( $(#[$($fattr)*])* $field /* { span: proc_macro2::Span } */ ),*
-        }
-
-        impl $crate::utils::parse::TokEnum for $name {
-            fn all_states() -> impl IntoIterator<Item = &'static str> {
-                [$( $crate::parse::tokenum!(@str $field $($str)?) ),*]
-            }
-
-            fn from_ident(ident: &syn::Ident) -> syn::Result<Self> {
-                // let span = syn::spanned::Spanned::span(&ident);
-
-                let ret = match &*ident.to_string() {
-                    $($crate::parse::tokenum!(@str $field $($str)?) => Self::$field /* { span } */ ,)*
-                    // TODO: expected one of
-                    other => bail!(other => "unexpected value: {other}")
-                };
-
-                Ok(ret)
-            }
-        }
-    };
-
-    (@str $field:ident $str:literal) => { $str };
-    (@str $field:ident) => { stringify!($field) };
-}
-
-pub(crate) use tokenum;
-
-use crate::{bail, ensure_empty_tokens};
 
 pub fn path_ident(path: &Path) -> Result<&Ident> {
     match path.segments.last() {

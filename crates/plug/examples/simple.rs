@@ -1,7 +1,13 @@
 use plug::plug;
 
+#[plug(implement::TestImpl)]
+trait Test {
+    async fn foo(&self) -> bool;
+    const fn bar(&self) -> u8;
+}
+
 mod implement {
-    use super::{__codegen_Test, Test}; // we need purescope after all -_-
+    use super::Test; // we need purescope after all -_-
     use plug::plug;
 
     #[plug]
@@ -12,29 +18,19 @@ mod implement {
 
         state: !,
 
-        c: u32,
+        c: u8,
     }
 
     #[plug]
-    impl Test for TestImpl {
-        fn foo(&self) -> bool {
+    impl Test::Interface for TestImpl {
+        async fn foo(&self) -> bool {
             true
         }
 
         const fn bar(&self) -> u8 {
-            0
+            self.c
         }
     }
-}
-
-#[plug(implement::TestImpl)]
-trait Test {
-    fn foo(&self) -> bool;
-    const fn bar(&self) -> u8;
-}
-
-const fn do_something(input: TestObject) {
-    input.bar();
 }
 
 fn main() {}

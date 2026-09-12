@@ -2,10 +2,9 @@ use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use serde::{Deserialize, Serialize};
 use syn::{
-    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, Path, PathSegment, Result,
-    Signature, Token, TraitItem, TraitItemFn, Type, Visibility,
+    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, Path, Result, Signature, Token,
+    TraitItem, TraitItemFn, Type,
     parse::{Nothing, Parse, ParseStream},
     parse_quote,
     spanned::Spanned,
@@ -21,7 +20,7 @@ use crate::{
 
 //
 
-#[derive(Clone, Parse, ToTokens, Serialize, Deserialize)]
+#[derive(Clone, Parse, ToTokens)]
 pub enum Mode {
     #[parse(peek = Token![mod])]
     FromMod,
@@ -40,7 +39,7 @@ impl Mode {
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Default)]
 enum Dispatch {
     /// similar to enum-dispatch
     #[default]
@@ -89,7 +88,7 @@ impl Parse for InterfaceAttrs {
 
 //
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 enum FnKind {
     Regular,
     Async { sync_path: bool },
@@ -212,8 +211,6 @@ impl Method {
     }
 }
 
-//
-
 struct InterfaceShape {
     name: Ident,
     attrs: InterfaceAttrs,
@@ -235,6 +232,10 @@ impl InterfaceShape {
 
     fn parse(input: &mut ItemTrait, attrs: InterfaceAttrs) -> Result<Self> {
         let mut this = Self::new(input.ident.clone(), attrs);
+
+        input.vis = parse_quote!(pub);
+        input.ident = format_ident!("Interface");
+
         let mut mask = Vec::new();
 
         for item in input.items.iter_mut() {
@@ -253,6 +254,10 @@ impl InterfaceShape {
         Ok(this)
     }
 
+    fn get_dispatch_kind(&self) -> Dispatch {
+        self.attrs.mode.dispatch_kind()
+    }
+
     // Returns whether the method is implementable
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
         let mut attrs = Attrs::extract(&mut input.attrs);
@@ -267,6 +272,14 @@ impl InterfaceShape {
         }
 
         let method = Method::parse(&mut input.sig)?;
+
+        if matches!(method.fn_kind, FnKind::Const) && !self.get_dispatch_kind().supports_const() {
+            bail!(
+                method.dispatch_signature.constness =>
+                "Const fn is not supported when using dynamic dispatch"
+            );
+        }
+
         self.dispatchable_methods.push(method);
 
         Ok(true)
@@ -295,7 +308,7 @@ impl InterfaceShape {
             variable_async_methods: variable_async_methods.into(),
         };
 
-        let exported_meta = export(format_ident!("{EXPORTED_META}"), data)?;
+        let exported_meta = export(format_ident!("__meta"), data)?;
 
         Ok(exported_meta)
     }
@@ -319,8 +332,6 @@ impl InterfaceShape {
     // Returns None if no impls are given for static dispatch
     // TODO: consider instead giving an error on empty impls without `todo` flag
     fn dispatch(&self) -> Result<DispatchCode> {
-        let object_ident = format_ident!("{}Object", &self.name);
-
         match self.attrs.mode.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
             Dispatch::Static => {
@@ -328,17 +339,15 @@ impl InterfaceShape {
                     amyhow!(self.name => "At least one impl is required for interface dispatch"),
                 )?;
 
-                static_dispatch(object_ident, impls, &self.dispatchable_methods)
+                static_dispatch(impls, &self.dispatchable_methods)
             }
         }
     }
 }
 
 struct DispatchCode {
-    object_ident: Ident, // TODO: stop passing this around
-    object: TokenStream,
+    codegen: TokenStream,
     dispatched_methods: Vec<TokenStream>,
-    other_codegen: TokenStream,
 }
 
 fn static_dispatch_method(variants: &[Ident], method: &Method) -> Result<TokenStream> {
@@ -365,18 +374,18 @@ fn static_dispatch_method(variants: &[Ident], method: &Method) -> Result<TokenSt
     Ok(content)
 }
 
-fn static_dispatch(
-    object_ident: Ident,
-    impls: Vec<Path>,
-    methods: &[Method],
-) -> Result<DispatchCode> {
+fn static_dispatch(impls: Vec<Path>, methods: &[Method]) -> Result<DispatchCode> {
     let variants: Vec<_> = impls
         .iter()
         .map(|x| path_ident(x).cloned())
         .collect::<Result<_>>()?;
 
-    let object = quote! {
-        enum #object_ident { #(
+    let codegen = quote! {
+        pub enum Tag {
+            #(#variants)*
+        }
+
+        pub enum Object { #(
             #variants(#impls))*
         }
     };
@@ -388,55 +397,44 @@ fn static_dispatch(
         .collect::<Result<_>>()?;
 
     Ok(DispatchCode {
-        object_ident,
-        object,
+        codegen,
         dispatched_methods,
-        other_codegen: quote! {},
     })
 }
 
-pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
+pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Result<TokenStream> {
     ensure_empty_tokens!(
-        input.generics.params,
+        trait_.generics.params,
         "Generic interfaces are not supported (yet)"
     );
 
-    let shape = InterfaceShape::parse(&mut input, attrs)?;
-    let name = &shape.name;
+    let vis = trait_.vis.clone();
 
-    let codegen_marker = interface_codegen_marker(name);
+    let shape = InterfaceShape::parse(&mut trait_, attrs)?;
+
+    let name = &shape.name;
     let meta = shape.export_meta()?;
 
-    // Dispatch
-
-    let object_vis = input.vis.clone();
-
     let DispatchCode {
-        object_ident,
-        object,
+        codegen,
         dispatched_methods,
-        other_codegen,
     } = shape.dispatch()?;
 
     let final_methods = &shape.final_methods;
 
-    //
-
     let content = quote! {
-        #input
+        #[allow(non_snake_case)]
+        #vis mod #name {
+            use super::*;
 
-        #object_vis #object
-
-        impl #object_ident {
-            #(#dispatched_methods)*
-            #(#final_methods)*
-        }
-
-        #[doc(hidden)]
-        #[allow(non_camel_case)]
-        pub(crate) mod #codegen_marker {
+            #trait_
             #meta
-            #other_codegen
+            #codegen
+
+            impl Object {
+                #(#dispatched_methods)*
+                #(#final_methods)*
+            }
         }
     };
 
@@ -445,17 +443,11 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
 
 // Interface meta is imported by impls
 
-const EXPORTED_META: &str = "meta";
-
 #[derive(Parse, ToTokens)]
 struct InterfaceMeta {
     mode: Mode,
     const_methods: Many<Ident, HashSet<Ident>>,
     variable_async_methods: Many<Ident, HashSet<Ident>>,
-}
-
-fn interface_codegen_marker(interface: &Ident) -> Ident {
-    format_ident!("__codegen_{interface}")
 }
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
@@ -502,8 +494,8 @@ impl Impl {
 
             self.register_const_fn(const_fn);
 
-            let call_inherent = method.call_via_context()?;
-            func.block = parse_quote!({ self.#call_inherent });
+            let call_inherent = method.call_via_self()?;
+            func.block = parse_quote!({ #call_inherent });
         };
 
         Ok(())
@@ -539,9 +531,7 @@ struct Context {
 }
 
 fn continue_with_interface_meta(ctx: Context) -> Result<TokenStream> {
-    let mut meta = path_sibling(&ctx.interface, interface_codegen_marker)?;
-    path_extend(&mut meta, format_ident!("{EXPORTED_META}"));
-
+    let meta = path_sibling(&ctx.interface, |_| format_ident!("__meta"))?;
     with_import!(#simple meta => register_impl_inner(ctx))
 }
 
@@ -568,8 +558,6 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     };
 
     let mut impl_ = Impl::new(interface, object);
-
-    // TODO: simplify
 
     for item in &mut input.items {
         match item {

@@ -1,7 +1,8 @@
-#![allow(dead_code)]
+// #![allow(dead_code)]
 
 // TODO: syn is both heavy and too restrictive (disallows CFIT, finals)
 // TODO: remove dep on syn_derive, replace with type-less impl (fixes `.inner` noise)
+// TODO: hide __meta! better (consider submodule)
 
 use proc_macro2::TokenStream;
 use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
@@ -16,13 +17,7 @@ use utils::*;
 const NAME: &str = "plug";
 
 define!(attribute plug = plug_impl);
-
-#[cfg(feature = "meta-passing")]
 define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
-#[cfg(not(feature = "meta-passing"))]
-compile_error!(
-    "Plug currently always requires full meta passing. This may be relaxed in the future"
-);
 
 #[derive(Parse)]
 enum Code {

@@ -24,6 +24,7 @@ fn random_string() -> Result<String> {
 
 pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
     let content = quote! {
+        #[doc(hidden)]
         macro_rules! #marker {
             ([$($other_imports:tt)*] $($data:tt)*) => {
                 ::plug_macro::__import_advance!([[#input], $($other_imports)*] $($data)* );

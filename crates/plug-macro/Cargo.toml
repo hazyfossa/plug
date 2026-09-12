@@ -11,17 +11,5 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "3", features = ["full"] }
 syn_derive = "0.2.0"
+getrandom = { version = "0.4.3", features = ["std"] }
 
-base64 = { version = "0.23", optional = true }
-minicbor-serde = { version = "0.7", features = ["std"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-getrandom = { version = "0.4.3", features = ["std"], optional = true }
-
-[features]
-meta-passing = [
-    "dep:serde",
-    "dep:minicbor-serde",
-    "dep:base64",
-    "dep:getrandom",
-]
-default = ["meta-passing"]

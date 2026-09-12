@@ -1,8 +1,5 @@
+pub mod meta_passing;
 pub mod parse;
-pub mod syn_serde;
-
-#[cfg(feature = "meta-passing")]
-pub(crate) mod meta_passing;
 
 use proc_macro2::TokenStream;
 use syn::Result;
