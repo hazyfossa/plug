@@ -9,7 +9,7 @@ use syn::{
     punctuated::Punctuated,
     spanned::Spanned,
 };
-use syn_derive::ToTokens;
+use syn_derive::{Parse, ToTokens};
 
 use crate::{bail, ensure_empty_tokens};
 
@@ -143,16 +143,8 @@ impl<T> std::ops::Deref for WithSpan<T> {
 
 // Attribute parsing
 
-#[derive(ToTokens)]
+#[derive(Parse, ToTokens)]
 pub struct Attrs(Many<MetaList>);
-
-impl Parse for Attrs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        // TODO
-        // input.parse().map(Self)
-        Ok(Self(Many::from(Vec::new())))
-    }
-}
 
 impl Attrs {
     pub fn extract(input: &mut Vec<Attribute>) -> Self {

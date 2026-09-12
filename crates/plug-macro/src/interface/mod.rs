@@ -118,15 +118,15 @@ impl FnKind {
 }
 
 enum MethodKind {
-    Accessor,
-    Constructor,
+    Stateful,
+    Associated,
 }
 
 impl MethodKind {
     fn parse(sig: &syn::Signature) -> Self {
         match sig.receiver() {
-            Some(_) => Self::Accessor,
-            None => Self::Constructor,
+            Some(_) => Self::Stateful,
+            None => Self::Associated,
         }
     }
 }
@@ -185,6 +185,7 @@ impl Method {
         Ok(args)
     }
 
+    // Requires prepending `provider`. or `Provider`:: as appropriate
     fn call_via_context(&self) -> Result<TokenStream> {
         let name = self.name();
         let args = self.args()?;
@@ -200,8 +201,8 @@ impl Method {
 
     fn call_via_self(&self) -> Result<TokenStream> {
         let provider = match self.kind() {
-            MethodKind::Constructor => quote! { Self:: },
-            MethodKind::Accessor => quote! { self. },
+            MethodKind::Associated => quote! { Self:: },
+            MethodKind::Stateful => quote! { self. },
         };
 
         let call = self.call_via_context()?;
@@ -329,19 +330,33 @@ impl InterfaceShape {
         Some(paths)
     }
 
-    // Returns None if no impls are given for static dispatch
-    // TODO: consider instead giving an error on empty impls without `todo` flag
-    fn dispatch(&self) -> Result<DispatchCode> {
-        match self.attrs.mode.dispatch_kind() {
+    fn dispatch(self) -> Result<TokenStream> {
+        let DispatchCode {
+            codegen,
+            dispatched_methods,
+        } = match self.attrs.mode.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
             Dispatch::Static => {
                 let impls = self.resolve_impls().ok_or(
                     amyhow!(self.name => "At least one impl is required for interface dispatch"),
                 )?;
 
-                static_dispatch(impls, &self.dispatchable_methods)
+                static_dispatch(impls, self.dispatchable_methods)?
             }
-        }
+        };
+
+        let final_methods = self.final_methods;
+
+        let content = quote! {
+            #codegen
+
+            impl Object {
+                #(#final_methods)*
+                #(#dispatched_methods)*
+            }
+        };
+
+        Ok(content)
     }
 }
 
@@ -350,37 +365,50 @@ struct DispatchCode {
     dispatched_methods: Vec<TokenStream>,
 }
 
-fn static_dispatch_method(variants: &[Ident], method: &Method) -> Result<TokenStream> {
-    let sig = &method.dispatch_signature;
-    let call = method.call_via_context()?;
-
-    let content = match method.kind() {
-        MethodKind::Constructor => todo!("constructors are TBD"),
-        MethodKind::Accessor => {
-            let branches: Vec<_> = variants
-                .iter()
-                .map(|v| {
-                    quote! { Self::#v(obj)
-                    => obj.#call }
-                })
-                .collect();
-
-            quote! { #sig {
-                match self { #(#branches),* }
-            } }
-        }
+// TODO: consider instead caching variant (needs impl to be a newtype with self-ref field)
+fn provide_call_context(kind: &MethodKind, impl_: &Path) -> Result<TokenStream> {
+    let variant = path_ident(impl_)?;
+    let content = match kind {
+        MethodKind::Stateful => quote! { Self::#variant(obj) => obj. },
+        MethodKind::Associated => quote! { Tag::#variant => #impl_:: },
     };
 
     Ok(content)
 }
 
-fn static_dispatch(impls: Vec<Path>, methods: &[Method]) -> Result<DispatchCode> {
-    let variants: Vec<_> = impls
+fn static_dispatch_method(impls: &[Path], method: Method) -> Result<TokenStream> {
+    let kind = method.kind();
+    let call_via_ctx = method.call_via_context()?;
+    let mut sig = method.dispatch_signature;
+
+    let determinant = match kind {
+        MethodKind::Stateful => quote! { self },
+        MethodKind::Associated => {
+            sig.inputs.insert(0, parse_quote!(tag: Tag));
+            quote! { tag }
+        }
+    };
+
+    let branches: Vec<TokenStream> = impls
         .iter()
-        .map(|x| path_ident(x).cloned())
+        .map(|impl_| {
+            let ctx = provide_call_context(&kind, impl_)?;
+            Ok(quote! { #ctx #call_via_ctx })
+        })
         .collect::<Result<_>>()?;
 
+    let content = quote! { pub #sig {
+        match #determinant { #(#branches)* }
+    }};
+
+    Ok(content)
+}
+
+fn static_dispatch(impls: Vec<Path>, methods: Vec<Method>) -> Result<DispatchCode> {
+    let variants: Vec<_> = impls.iter().map(|x| path_ident(x)).collect::<Result<_>>()?;
+
     let codegen = quote! {
+        // TODO: string (::TAG) <-> enum
         pub enum Tag {
             #(#variants)*
         }
@@ -390,10 +418,10 @@ fn static_dispatch(impls: Vec<Path>, methods: &[Method]) -> Result<DispatchCode>
         }
     };
 
-    // Product: (Method x Variant)
+    // Product: (Methods x Impls)
     let dispatched_methods = methods
-        .iter()
-        .map(|m| static_dispatch_method(&variants, m))
+        .into_iter()
+        .map(|m| static_dispatch_method(&impls, m))
         .collect::<Result<_>>()?;
 
     Ok(DispatchCode {
@@ -412,29 +440,17 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Resul
 
     let shape = InterfaceShape::parse(&mut trait_, attrs)?;
 
-    let name = &shape.name;
+    let name = shape.name.clone(); // TODO
     let meta = shape.export_meta()?;
 
-    let DispatchCode {
-        codegen,
-        dispatched_methods,
-    } = shape.dispatch()?;
-
-    let final_methods = &shape.final_methods;
+    let dispatched = shape.dispatch()?;
 
     let content = quote! {
         #[allow(non_snake_case)]
         #vis mod #name {
             use super::*;
 
-            #trait_
-            #meta
-            #codegen
-
-            impl Object {
-                #(#dispatched_methods)*
-                #(#final_methods)*
-            }
+            #trait_ #meta #dispatched
         }
     };
 
