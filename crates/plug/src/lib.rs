@@ -17,3 +17,8 @@ pub trait Init: Object + Sized {
 
 #[allow(type_alias_bounds)]
 pub type Constructor<T: Init> = fn(&T::Config) -> Routine<Result<T, T::Error>>;
+
+pub trait Loadable {
+    type Config;
+    fn load_from_config(cfg: &Self::Config) -> Self;
+}

@@ -1,16 +1,11 @@
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::{LazyLock, RwLock},
 };
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{
-    Ident, LitStr, Path, Result, Token,
-    parse::{Parse, ParseStream},
-    parse_quote,
-};
+use syn::{Ident, LitStr, Path, Result, parse::Parse, parse_quote};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{

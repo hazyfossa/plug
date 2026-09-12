@@ -1,13 +1,8 @@
 use plug::plug;
 
-#[plug(implement::TestImpl)]
-trait Test {
-    fn foo(&self) -> bool;
-    const fn bar(&self) -> u8;
-}
-
 mod implement {
-    use super::*;
+    use super::{__codegen_Test, Test}; // we need purescope after all -_-
+    use plug::plug;
 
     #[plug]
     // TODO (cfg derives) #[derive(Default)]
@@ -30,6 +25,12 @@ mod implement {
             0
         }
     }
+}
+
+#[plug(implement::TestImpl)]
+trait Test {
+    fn foo(&self) -> bool;
+    const fn bar(&self) -> u8;
 }
 
 const fn do_something(input: TestObject) {

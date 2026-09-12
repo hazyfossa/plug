@@ -3,17 +3,17 @@ use std::collections::HashSet;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use serde::{Deserialize, Serialize};
-use syn::parse::{Nothing, Parse, ParseStream};
-use syn::spanned::Spanned;
 use syn::{
-    Block, FnArg, ImplItem, ImplItemFn, ItemImpl, Pat, PathSegment, Signature, Token, Type,
-    Visibility, parse_quote,
+    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, Path, PathSegment, Result,
+    Signature, Token, TraitItem, TraitItemFn, Type, Visibility,
+    parse::{Nothing, Parse, ParseStream},
+    parse_quote,
+    spanned::Spanned,
 };
-use syn::{Ident, ItemTrait, Path, Result, TraitItem, TraitItemFn};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{
-    bail, ensure_empty_tokens,
+    amyhow, bail, ensure_empty_tokens,
     meta_passing::{export, with_import},
     parse::{Attrs, Many, path_extend, path_ident, path_sibling},
     retain_by_mask,
@@ -84,26 +84,6 @@ impl Parse for InterfaceAttrs {
         let paths = paths.map(|x| x.inner);
 
         Ok(InterfaceAttrs { mode, paths })
-    }
-}
-
-impl InterfaceAttrs {
-    fn resolve_static_impls(self, interface: &Ident) -> Vec<Path> {
-        match self.mode {
-            Mode::Dynamic => panic!("cannot resolve static impls in dynamic mode"),
-            Mode::Direct => self.paths.unwrap(),
-            Mode::FromMod => {
-                let mut paths = self.paths.unwrap();
-
-                for p in &mut paths {
-                    p.segments.push_value(PathSegment {
-                        ident: registered_module_object_marker(interface),
-                        arguments: syn::PathArguments::None,
-                    });
-                }
-                paths
-            }
-        }
     }
 }
 
@@ -182,7 +162,7 @@ impl Method {
         let ident = &self.dispatch_signature.ident;
 
         match self.fn_kind {
-            FnKind::Const => format_ident!("__inherent_{ident}"),
+            FnKind::Const => format_ident!("__const_{ident}"),
             _ => ident.clone(),
         }
     }
@@ -240,10 +220,6 @@ struct InterfaceShape {
 
     dispatchable_methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
-
-    // subsets of dispatchable
-    variable_async_methods: HashSet<Ident>,
-    const_methods: HashSet<Ident>,
     // TODO: assoc const, types
 }
 
@@ -253,8 +229,6 @@ impl InterfaceShape {
             name,
             attrs,
             dispatchable_methods: Vec::new(),
-            variable_async_methods: HashSet::new(),
-            const_methods: HashSet::new(),
             final_methods: Vec::new(),
         }
     }
@@ -299,94 +273,126 @@ impl InterfaceShape {
     }
 
     fn export_meta(&self) -> Result<TokenStream> {
-        // TODO: less copies
+        let mut variable_async_methods = HashSet::new();
+        let mut const_methods = HashSet::new();
+
+        for method in &self.dispatchable_methods {
+            let ident = &method.dispatch_signature.ident;
+            match method.fn_kind {
+                FnKind::Const => {
+                    const_methods.insert(ident.clone());
+                }
+                FnKind::Async { sync_path: true } => {
+                    variable_async_methods.insert(ident.clone());
+                }
+                _ => (),
+            };
+        }
+
         let data = InterfaceMeta {
             mode: self.attrs.mode.clone(),
-            const_methods: self.const_methods.clone().into(),
-            variable_async_methods: self.variable_async_methods.clone().into(),
+            const_methods: const_methods.into(),
+            variable_async_methods: variable_async_methods.into(),
         };
 
-        let codegen_marker = interface_codegen_marker(&self.name);
         let exported_meta = export(format_ident!("{EXPORTED_META}"), data)?;
 
-        let content = quote! {
-            #[doc(hidden)]
-            #[allow(non_camel_case)]
-            pub(crate) mod #codegen_marker {
-                #exported_meta
-            }
-        };
+        Ok(exported_meta)
+    }
 
-        Ok(content)
+    fn resolve_impls(&self) -> Option<Vec<Path>> {
+        let mut paths = self.attrs.paths.clone()?;
+
+        if paths.is_empty() {
+            return None;
+        }
+
+        if matches!(self.attrs.mode, Mode::FromMod) {
+            for path in &mut paths {
+                path_extend(path, registered_module_object_marker(&self.name));
+            }
+        }
+
+        Some(paths)
+    }
+
+    // Returns None if no impls are given for static dispatch
+    // TODO: consider instead giving an error on empty impls without `todo` flag
+    fn dispatch(&self) -> Result<DispatchCode> {
+        let object_ident = format_ident!("{}Object", &self.name);
+
+        match self.attrs.mode.dispatch_kind() {
+            Dispatch::Dynamic => todo!("dyn path"),
+            Dispatch::Static => {
+                let impls = self.resolve_impls().ok_or(
+                    amyhow!(self.name => "At least one impl is required for interface dispatch"),
+                )?;
+
+                static_dispatch(object_ident, impls, &self.dispatchable_methods)
+            }
+        }
     }
 }
 
-trait Dispatcher: Sized {
-    type Impls;
-    fn new_interface(
-        object_vis: Visibility,
-        object_name: Ident,
-        impls: Self::Impls,
-    ) -> Result<(Self, TokenStream)>;
-
-    fn dispatch_method(&self, method: &Method) -> Result<TokenStream>;
+struct DispatchCode {
+    object_ident: Ident, // TODO: stop passing this around
+    object: TokenStream,
+    dispatched_methods: Vec<TokenStream>,
+    other_codegen: TokenStream,
 }
 
-struct StaticDispatch {
-    name: Ident,
-    variants: Vec<Ident>,
+fn static_dispatch_method(variants: &[Ident], method: &Method) -> Result<TokenStream> {
+    let sig = &method.dispatch_signature;
+    let call = method.call_via_context()?;
+
+    let content = match method.kind() {
+        MethodKind::Constructor => todo!("constructors are TBD"),
+        MethodKind::Accessor => {
+            let branches: Vec<_> = variants
+                .iter()
+                .map(|v| {
+                    quote! { Self::#v(obj)
+                    => obj.#call }
+                })
+                .collect();
+
+            quote! { #sig {
+                match self { #(#branches),* }
+            } }
+        }
+    };
+
+    Ok(content)
 }
 
-impl Dispatcher for StaticDispatch {
-    type Impls = Vec<Path>;
+fn static_dispatch(
+    object_ident: Ident,
+    impls: Vec<Path>,
+    methods: &[Method],
+) -> Result<DispatchCode> {
+    let variants: Vec<_> = impls
+        .iter()
+        .map(|x| path_ident(x).cloned())
+        .collect::<Result<_>>()?;
 
-    fn new_interface(
-        object_vis: Visibility,
-        object_name: Ident,
-        impls: Self::Impls,
-    ) -> Result<(Self, TokenStream)> {
-        let variants: Vec<_> = impls
-            .iter()
-            .map(|x| path_ident(x).cloned())
-            .collect::<Result<_>>()?;
+    let object = quote! {
+        enum #object_ident { #(
+            #variants(#impls))*
+        }
+    };
 
-        let content = quote! {
-            #object_vis enum #object_name { #(
-                #variants(#impls))*
-            }
-        };
+    // Product: (Method x Variant)
+    let dispatched_methods = methods
+        .iter()
+        .map(|m| static_dispatch_method(&variants, m))
+        .collect::<Result<_>>()?;
 
-        let this = Self {
-            name: object_name,
-            variants,
-        };
-        Ok((this, content))
-    }
-
-    fn dispatch_method(&self, method: &Method) -> Result<TokenStream> {
-        let sig = &method.dispatch_signature;
-        let call = method.call_via_context()?;
-
-        let content = match method.kind() {
-            MethodKind::Constructor => todo!("constructors are TBD"),
-            MethodKind::Accessor => {
-                let branches: Vec<_> = self
-                    .variants
-                    .iter()
-                    .map(|v| {
-                        quote! { Self::#v(obj)
-                        => obj.#call }
-                    })
-                    .collect();
-
-                quote! { #sig {
-                    match self { #(#branches),* }
-                } }
-            }
-        };
-
-        Ok(content)
-    }
+    Ok(DispatchCode {
+        object_ident,
+        object,
+        dispatched_methods,
+        other_codegen: quote! {},
+    })
 }
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result<TokenStream> {
@@ -396,35 +402,21 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
     );
 
     let shape = InterfaceShape::parse(&mut input, attrs)?;
+    let name = &shape.name;
+
+    let codegen_marker = interface_codegen_marker(name);
     let meta = shape.export_meta()?;
 
     // Dispatch
 
-    let name = shape.name;
     let object_vis = input.vis.clone();
-    let object_name = format_ident!("{name}Object");
 
-    let (dispatcher, object_code) = match shape.attrs.mode.dispatch_kind() {
-        Dispatch::Dynamic => todo!(),
-        Dispatch::Static => {
-            let impls = shape.attrs.resolve_static_impls(&name);
-
-            // Saves downstream code from checking this edge-case
-            // thus saving some codegen from inappropriate-zero-token bugs
-            // TODO: consider panicking if this happens and flag "todo" is unset
-            if impls.is_empty() {
-                return Ok(input.into_token_stream());
-            }
-
-            StaticDispatch::new_interface(object_vis, object_name.clone(), impls)?
-        }
-    };
-
-    let dispatched_methods: Vec<TokenStream> = shape
-        .dispatchable_methods
-        .iter()
-        .map(|x| dispatcher.dispatch_method(x))
-        .collect::<Result<_>>()?;
+    let DispatchCode {
+        object_ident,
+        object,
+        dispatched_methods,
+        other_codegen,
+    } = shape.dispatch()?;
 
     let final_methods = &shape.final_methods;
 
@@ -432,12 +424,19 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut input: ItemTrait) -> Result
 
     let content = quote! {
         #input
-        #object_code // TODO: allow dispatchers to also write to __codegen (relevant for dyn)
-        #meta
 
-        impl #object_name {
+        #object_vis #object
+
+        impl #object_ident {
             #(#dispatched_methods)*
             #(#final_methods)*
+        }
+
+        #[doc(hidden)]
+        #[allow(non_camel_case)]
+        pub(crate) mod #codegen_marker {
+            #meta
+            #other_codegen
         }
     };
 
@@ -482,10 +481,10 @@ impl Impl {
 
     // fn parse(input: &mut ImplItem) -> Result<Self> {}
 
-    fn add_inherent_fn(&mut self, mut func: ImplItemFn) {
+    fn register_const_fn(&mut self, mut func: ImplItemFn) {
         func.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
         func.attrs.push(parse_quote!(#[doc(hidden)]));
-        func.sig.ident = format_ident!("__inherent_{}", &func.sig.ident);
+        func.sig.ident = format_ident!("__const_{}", &func.sig.ident);
 
         self.inherents.push(func.to_token_stream());
     }
@@ -501,7 +500,7 @@ impl Impl {
                 x
             };
 
-            self.add_inherent_fn(const_fn);
+            self.register_const_fn(const_fn);
 
             let call_inherent = method.call_via_context()?;
             func.block = parse_quote!({ self.#call_inherent });
@@ -580,7 +579,10 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     }
 
     let codegen = impl_.codegen()?;
-    let content = quote! { #input #codegen };
+    let content = quote! {
+        #input
+        #codegen
+    };
     Ok(content)
 }
 
@@ -606,6 +608,9 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
         let ImplementedMethod { attrs, sig, .. } = method;
 
         if meta.const_methods.inner.contains(&sig.ident) {
+            // TODO: the following currently never fires,
+            // because rustc aborts parent mod prior to macro exec
+            // with reason: (inherent) method not found
             if sig.constness.is_none() {
                 bail!(sig.ident => "function must be const")
             }

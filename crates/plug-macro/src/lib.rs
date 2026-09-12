@@ -34,6 +34,9 @@ enum Code {
     Impl(ItemImpl),
 }
 
+// TODO: support passing attrs
+// requires change of API to split tokens into primary and codegen
+
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x) => interface::trait_to_interface(syn::parse2(attrs)?, x),
