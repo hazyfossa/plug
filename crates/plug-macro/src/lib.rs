@@ -1,8 +1,14 @@
-// #![allow(dead_code)]
-
-// TODO: syn is both heavy and too restrictive (disallows CFIT, finals)
-// TODO: remove dep on syn_derive, replace with type-less impl (fixes `.inner` noise)
-// TODO: hide __meta! better (consider submodule)
+// TODOs:
+// [ ] remove dep on syn_derive, replace with type-less impl (fixes `.inner` noise)
+// [ ] hide __meta! better (consider submodule)
+// [ ] allow #[plug(const)] as alternative to `const fn`
+// [ ] support passing attrs (requires change of ret convention)
+// [ ] Tag <-> String for enums
+// [ ] consider moving `impl` into separate crate for ergonomics (rust analyzer excludes)
+// [ ] loading interfaces from config
+// [ ] storage model (blocked on paradigm)
+// [ ] (try to) rewrite attr parsing
+// [ ] dyn path
 
 use proc_macro2::TokenStream;
 use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
@@ -28,9 +34,6 @@ enum Code {
     #[parse(peek = Token![impl])]
     Impl(ItemImpl),
 }
-
-// TODO: support passing attrs
-// requires change of API to split tokens into primary and codegen
 
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {

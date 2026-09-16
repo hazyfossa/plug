@@ -236,6 +236,7 @@ impl InterfaceShape {
 
         input.vis = parse_quote!(pub);
         input.ident = format_ident!("Interface");
+        input.supertraits.push(parse_quote!(::plug::Init));
 
         let mut mask = Vec::new();
 
@@ -431,10 +432,8 @@ fn static_dispatch(impls: Vec<Path>, methods: Vec<Method>) -> Result<DispatchCod
 }
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Result<TokenStream> {
-    ensure_empty_tokens!(
-        trait_.generics.params,
-        "Generic interfaces are not supported (yet)"
-    );
+    ensure_empty_tokens!(trait_.generics.params, "Generic interfaces are TBD");
+    ensure_empty_tokens!(trait_.supertraits, "Nested interfaces are TBD");
 
     let vis = trait_.vis.clone();
 

@@ -9,7 +9,7 @@ trait Test {
 
 mod implement {
     use super::Test;
-    use plug::plug;
+    use plug::{Init, plug};
 
     #[plug]
     // TODO (cfg derives) #[derive(Default)]
