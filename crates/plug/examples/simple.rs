@@ -9,17 +9,13 @@ trait Test {
 
 mod implement {
     use super::Test;
-    use plug::{Init, plug};
+    use plug::plug;
 
     #[plug]
     // TODO (cfg derives) #[derive(Default)]
     struct TestImpl {
         a: String,
         b: String,
-
-        state: !,
-
-        c: u8,
     }
 
     #[plug]
@@ -33,7 +29,7 @@ mod implement {
         }
 
         const fn bar(&self) -> u8 {
-            self.c
+            0
         }
     }
 }

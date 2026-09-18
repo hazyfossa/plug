@@ -63,7 +63,7 @@ impl<T: Unpin> Future for Routine<T> {
 // individual objects
 
 #[allow(type_alias_bounds)]
-type Construct<T: Object> = Routine<eyre::Result<T>>;
+pub type Construct<T: Object> = Routine<eyre::Result<T>>;
 
 pub trait Object {
     type Config;

@@ -57,6 +57,16 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
     let name = input.ident;
     let config_ident = format_ident!("{name}Config");
 
+    let maybe_empty_init = state.is_empty().then_some(quote! {
+        // #[automatically_derived]
+        impl ::plug::Init for #name {
+            fn init(_: &Self::Config) -> ::plug::Construct<Self> {
+                let instance = #name {};
+                ::plug::Routine::define_direct(Ok(instance))
+            }
+        }
+    });
+
     let content = quote! {
         #(#attrs)*
         pub struct #config_ident {
@@ -75,6 +85,8 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
             type Config = #config_ident;
             const TAG: &str = #tag;
         }
+
+        #maybe_empty_init
     };
 
     Ok(content)
