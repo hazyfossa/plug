@@ -11,5 +11,3 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "3", features = ["full"] }
 syn_derive = "0.2.0"
-getrandom = { version = "0.4.3", features = ["std"] }
-

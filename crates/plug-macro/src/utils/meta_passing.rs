@@ -5,22 +5,13 @@ use std::{
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{Ident, LitStr, Path, Result, parse::Parse, parse_quote};
+use syn::{Ident, LitInt, Path, Result, parse::Parse, parse_quote};
 use syn_derive::{Parse, ToTokens};
 
 use crate::{
     bail,
     parse::{Bracketed, Many, Tokens},
 };
-
-fn random_string() -> Result<String> {
-    let rand = match getrandom::u32() {
-        Ok(x) => x,
-        _ => bail!(=> "getrandom failed"),
-    };
-
-    Ok(format!("{rand:x}"))
-}
 
 pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
     let content = quote! {
@@ -58,27 +49,35 @@ impl RawImport {
 
 // TODO: this could be linktime...
 type Callback = fn(RawImport) -> Result<TokenStream>;
-type CallbackToken = String;
+type CallbackToken = u32;
 
 struct CallbackRegistry {
-    inner: RwLock<HashMap<CallbackToken, Callback>>,
+    free_token: CallbackToken,
+    inner: HashMap<CallbackToken, Callback>,
 }
 
 impl CallbackRegistry {
     fn new() -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            free_token: 0,
+            inner: HashMap::new(),
         }
     }
 
-    fn register_callback(&self, f: Callback) -> Result<CallbackToken> {
-        let token = random_string()?;
-        self.inner.write().unwrap().insert(token.clone(), f);
+    fn new_token(&mut self) -> u32 {
+        let free = self.free_token;
+        self.free_token += 1;
+        free
+    }
+
+    fn register_callback(&mut self, f: Callback) -> Result<CallbackToken> {
+        let token = self.new_token();
+        self.inner.insert(token, f);
         Ok(token)
     }
 
     fn get_callback(&self, token: CallbackToken) -> Result<Callback> {
-        match self.inner.read().unwrap().get(&token) {
+        match self.inner.get(&token) {
             Some(x) => Ok(*x),
             None => bail!(=> "undefined callback token: {token}"),
         }
@@ -86,11 +85,12 @@ impl CallbackRegistry {
 }
 
 #[allow(private_interfaces)]
-pub static CB: LazyLock<CallbackRegistry> = LazyLock::new(|| CallbackRegistry::new());
+pub static CB: LazyLock<RwLock<CallbackRegistry>> =
+    LazyLock::new(|| RwLock::new(CallbackRegistry::new()));
 
 #[derive(Parse, ToTokens)]
 struct ImportContinuation {
-    callback_token: LitStr,
+    callback_token: LitInt,
     passed: Tokens,
 }
 
@@ -152,10 +152,10 @@ pub fn import_advance(mut chain: ImportChain) -> Result<TokenStream> {
             let cons = chain.cons.inner;
 
             let aux = cons.passed.inner;
-            let callback_token = cons.callback_token;
+            let callback_token = cons.callback_token.base10_parse()?;
             let imported = chain.got.inner.inner.into_iter().map(|x| x.inner).collect();
 
-            let callback = CB.get_callback(callback_token.value())?;
+            let callback = CB.read().unwrap().get_callback(callback_token)?;
             callback(RawImport { imported, aux })
         }
         false => {
@@ -172,7 +172,7 @@ pub fn import<Aux: ToTokens>(
     aux: Aux,
     callback: Callback,
 ) -> Result<TokenStream> {
-    let token = CB.register_callback(callback)?;
+    let token = CB.write().unwrap().register_callback(callback)?;
 
     let sources = sources.into_iter().collect();
     let pass = aux.to_token_stream();

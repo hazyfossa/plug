@@ -4,14 +4,14 @@ use std::marker::PhantomData;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 use syn::{
-    Attribute, Ident, Meta, MetaList, Path, Result, Token,
+    Attribute, Ident, Meta, Path, Result, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
 };
 use syn_derive::{Parse, ToTokens};
 
-use crate::{bail, ensure_empty_tokens};
+use crate::bail;
 
 // Many
 
@@ -144,21 +144,14 @@ impl<T> std::ops::Deref for WithSpan<T> {
 // Attribute parsing
 
 #[derive(Parse, ToTokens)]
-pub struct Attrs(Many<MetaList>);
+pub struct Attrs(Many<Meta>);
 
 impl Attrs {
     pub fn extract(input: &mut Vec<Attribute>) -> Self {
         // TODO: simplify?
         let inner = input
-            .extract_if(.., |attr| {
-                attr.meta
-                    .require_list()
-                    .is_ok_and(|x| x.path.is_ident(crate::NAME))
-            })
-            .map(|attr| match attr.meta {
-                Meta::List(x) => x,
-                _ => unreachable!(),
-            })
+            .extract_if(.., |attr| attr.meta.path().is_ident(crate::NAME))
+            .map(|attr| attr.meta)
             .collect::<Vec<_>>();
 
         Self(inner.into())
@@ -172,17 +165,14 @@ impl Attrs {
     ) -> Result<Option<Ident>> {
         let flags: Vec<_> = flags.into_iter().collect();
 
-        let mut matches = self
-            .0
-            .inner
-            .extract_if(.., |attr| flags.iter().any(|flag| attr.path.is_ident(flag)));
+        let mut matches = self.0.inner.extract_if(.., |attr| {
+            flags.iter().any(|flag| attr.path().is_ident(flag))
+        });
 
         let ret = match matches.next() {
             Some(x) => {
-                ensure_empty_tokens!(x.tokens, "this is a flag-style attribute");
-
                 // Unwrap is guarded by extraction case above
-                x.path.get_ident().unwrap().clone()
+                x.path().get_ident().unwrap().clone()
             }
             None => return Ok(None),
         };
@@ -192,6 +182,14 @@ impl Attrs {
             bail!(second_match => "duplicate attribute");
         } else {
             Ok(Some(ret))
+        }
+    }
+
+    pub fn finish(self) -> Result<()> {
+        let remaining = self.0.inner.iter().next();
+        match remaining {
+            None => Ok(()),
+            Some(unhandled) => bail!(unhandled => "invalid attribute"),
         }
     }
 }
