@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use darling::{FromAttributes, FromMeta};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -14,7 +15,7 @@ use syn_derive::{Parse, ToTokens};
 use crate::{
     amyhow, bail, ensure_empty_tokens,
     meta_passing::{export, with_import},
-    parse::{Attrs, Many, path_extend, path_ident, path_sibling},
+    parse::{Many, parse_attrs, path_extend, path_ident, path_sibling},
     retain_by_mask,
 };
 
@@ -212,6 +213,13 @@ impl Method {
     }
 }
 
+#[derive(FromAttributes)]
+#[darling(attributes(plug))]
+struct MethodAttrs {
+    #[darling(default, rename = "final")]
+    is_final: bool,
+}
+
 struct InterfaceShape {
     name: Ident,
     attrs: InterfaceAttrs,
@@ -262,13 +270,11 @@ impl InterfaceShape {
 
     // Returns whether the method is implementable
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
-        let mut attrs = Attrs::extract(&mut input.attrs);
-
         // TODO: modifers that we want but syn doesn't parse: final
         // for now, we substitute via custom attr
-        let is_final = attrs.select_one(["final"])?.is_some();
+        let attrs: MethodAttrs = parse_attrs(&mut input.attrs)?;
 
-        if is_final {
+        if attrs.is_final {
             self.final_methods.push(input.clone());
             return Ok(false);
         }
@@ -553,7 +559,6 @@ fn continue_with_interface_meta(ctx: Context) -> Result<TokenStream> {
 // TODO: this only exists to provide spans, otherwise could be just `Method`
 #[derive(Parse, ToTokens)]
 struct ImplementedMethod {
-    attrs: Attrs,
     sig: Signature,
 }
 
@@ -608,7 +613,7 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
     };
 
     for method in ctx.impl_methods.inner {
-        let ImplementedMethod { attrs, sig, .. } = method;
+        let ImplementedMethod { sig, .. } = method;
 
         if meta.const_methods.inner.contains(&sig.ident) {
             // TODO: the following currently never fires,
@@ -620,7 +625,6 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
         }
 
         if meta.variable_async_methods.inner.contains(&sig.ident) {
-            let _needed_here = attrs;
             todo!("variable async path");
         };
     }

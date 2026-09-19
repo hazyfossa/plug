@@ -29,10 +29,6 @@ mod implement {
             "Hello, world".to_string()
         }
 
-        fn fas() -> u16 {
-            1
-        }
-
         async fn foo(&self) -> bool {
             true
         }

@@ -47,7 +47,7 @@ impl<T: Unpin> Future for Routine<T> {
             this @ Self::Direct(_) => {
                 let ret = match mem::replace(this, Self::Finished) {
                     Self::Direct(value) => value,
-                    _ => unreachable!(), // guarded by match of `this` above
+                    _ => unreachable!(), // guarded by match above
                 };
 
                 Poll::Ready(ret)
