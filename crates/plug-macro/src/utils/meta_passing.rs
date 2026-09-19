@@ -6,11 +6,10 @@ use std::{
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{Ident, LitInt, Path, Result, parse::Parse, parse_quote};
-use syn_derive::{Parse, ToTokens};
 
 use crate::{
     bail,
-    parse::{Bracketed, Many, Tokens},
+    parse::{Bracketed, Many, Tokens, parse},
 };
 
 pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
@@ -88,47 +87,20 @@ impl CallbackRegistry {
 pub static CB: LazyLock<RwLock<CallbackRegistry>> =
     LazyLock::new(|| RwLock::new(CallbackRegistry::new()));
 
-#[derive(Parse, ToTokens)]
-struct ImportContinuation {
-    callback_token: LitInt,
-    passed: Tokens,
-}
-
-// #[derive(Parse, ToTokens)]
-pub struct ImportChain {
-    got: Bracketed<Many<Tokens>>,
-    remaining_sources: Bracketed<Many<Path>>,
-    cons: Bracketed<ImportContinuation>,
-}
-
-impl ::syn::parse::Parse for ImportChain {
-    fn parse(__input: ::syn::parse::ParseStream) -> ::syn::Result<Self> {
-        let got = __input.parse()?;
-        let remaining_sources = __input.parse()?;
-
-        let cons = __input.parse()?;
-
-        ::syn::Result::Ok(Self {
-            got,
-            remaining_sources,
-            cons,
-        })
+parse!(
+    struct ImportContinuation {
+        callback_token: LitInt,
+        passed: Tokens,
     }
-}
-impl ::quote::ToTokens for ImportChain {
-    fn to_tokens(&self, tokens: &mut ::proc_macro2::TokenStream) {
-        let Self {
-            got,
-            remaining_sources,
-            cons,
-        } = self;
-        {
-            got.to_tokens(tokens);
-            remaining_sources.to_tokens(tokens);
-            cons.to_tokens(tokens);
-        }
+);
+
+parse!(
+    pub struct ImportChain {
+        got: Bracketed<Many<Tokens>>,
+        remaining_sources: Bracketed<Many<Path>>,
+        cons: Bracketed<ImportContinuation>,
     }
-}
+);
 
 impl ImportChain {
     fn new(sources: Vec<Path>, callback_token: CallbackToken, pass: TokenStream) -> Self {

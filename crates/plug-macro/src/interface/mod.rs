@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use darling::{FromAttributes, FromMeta};
+use darling::FromAttributes;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -10,26 +10,23 @@ use syn::{
     parse_quote,
     spanned::Spanned,
 };
-use syn_derive::{Parse, ToTokens};
 
 use crate::{
     amyhow, bail, ensure_empty_tokens,
     meta_passing::{export, with_import},
-    parse::{Many, parse_attrs, path_extend, path_ident, path_sibling},
+    parse::{Many, PathExt, parse, parse_attrs},
     retain_by_mask,
 };
 
 //
 
-#[derive(Clone, Parse, ToTokens)]
+parse!(
+#[derive(Clone)]
 pub enum Mode {
-    #[parse(peek = Token![mod])]
-    FromMod,
-    #[parse(peek = Token![dyn])]
-    Dynamic,
-
-    Direct,
-}
+    FromMod = mod,
+    Dynamic = dyn,
+    @default Direct
+});
 
 impl Mode {
     fn dispatch_kind(&self) -> Dispatch {
@@ -65,20 +62,26 @@ pub struct InterfaceAttrs {
 // TODO: derive this
 impl Parse for InterfaceAttrs {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mode: Mode = input.parse()?;
+        let mode_parse = input.lookahead1();
+
+        let mode = if mode_parse.peek(Token![mod]) {
+            let _ = input.parse::<Token![mod]>()?;
+            Mode::FromMod
+        } else if mode_parse.peek(Token![dyn]) {
+            let _ = input.parse::<Token![dyn]>()?;
+            Mode::Dynamic
+        } else {
+            Mode::Direct
+        };
 
         let paths: Option<Many<Path>> = match mode {
             Mode::Direct => Some(input.parse()?),
             Mode::FromMod => {
-                let _marker = input.parse::<Token![mod]>()?;
                 let content;
                 syn::parenthesized!(content in input);
                 Some(content.parse()?)
             }
-            Mode::Dynamic => {
-                let _marker = input.parse::<Token![dyn]>()?;
-                None
-            }
+            Mode::Dynamic => None,
         };
 
         let paths = paths.map(|x| x.inner);
@@ -330,7 +333,7 @@ impl InterfaceShape {
 
         if matches!(self.attrs.mode, Mode::FromMod) {
             for path in &mut paths {
-                path_extend(path, registered_module_object_marker(&self.name));
+                path.extend(registered_module_object_marker(&self.name));
             }
         }
 
@@ -374,7 +377,7 @@ struct DispatchCode {
 
 // TODO: consider instead caching variant (needs impl to be a newtype with self-ref field)
 fn provide_call_context(kind: &MethodKind, impl_: &Path) -> Result<TokenStream> {
-    let variant = path_ident(impl_)?;
+    let variant = impl_.last_ident()?;
     let content = match kind {
         MethodKind::Stateful => quote! { Self::#variant(obj) => obj. },
         MethodKind::Associated => quote! { Tag::#variant => #impl_:: },
@@ -412,7 +415,10 @@ fn static_dispatch_method(impls: &[Path], method: Method) -> Result<TokenStream>
 }
 
 fn static_dispatch(impls: Vec<Path>, methods: Vec<Method>) -> Result<DispatchCode> {
-    let variants: Vec<_> = impls.iter().map(|x| path_ident(x)).collect::<Result<_>>()?;
+    let variants: Vec<_> = impls
+        .iter()
+        .map(|x| x.last_ident())
+        .collect::<Result<_>>()?;
 
     let codegen = quote! {
         // TODO: string (::TAG) <-> enum
@@ -464,12 +470,13 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Resul
 
 // Interface meta is imported by impls
 
-#[derive(Parse, ToTokens)]
-struct InterfaceMeta {
-    mode: Mode,
-    const_methods: Many<Ident, HashSet<Ident>>,
-    variable_async_methods: Many<Ident, HashSet<Ident>>,
-}
+parse!(
+    struct InterfaceMeta {
+        mode: Mode,
+        const_methods: Many<Ident, HashSet<Ident>>,
+        variable_async_methods: Many<Ident, HashSet<Ident>>,
+    }
+);
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
     format_ident!("registered {interface} impl for this module")
@@ -544,23 +551,25 @@ impl Impl {
     }
 }
 
-#[derive(Parse, ToTokens)]
-struct Context {
-    object: Path,
-    interface: Path,
-    impl_methods: Many<ImplementedMethod>,
-}
+parse!(
+    struct Context {
+        object: Path,
+        interface: Path,
+        impl_methods: Many<ImplementedMethod>,
+    }
+);
 
 fn continue_with_interface_meta(ctx: Context) -> Result<TokenStream> {
-    let meta = path_sibling(&ctx.interface, |_| format_ident!("__meta"))?;
+    let meta = ctx.interface.sibling(|_| format_ident!("__meta"))?;
     with_import!(#simple meta => register_impl_inner(ctx))
 }
 
 // TODO: this only exists to provide spans, otherwise could be just `Method`
-#[derive(Parse, ToTokens)]
-struct ImplementedMethod {
-    sig: Signature,
-}
+parse!(
+    struct ImplementedMethod {
+        sig: Signature,
+    }
+);
 
 pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     let interface = match input.trait_ {
@@ -601,7 +610,7 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
     let signal = match meta.mode {
         Mode::Direct => None,
         Mode::FromMod => {
-            let interface = path_ident(&ctx.interface)?;
+            let interface = &ctx.interface.last_ident()?;
             let marker = registered_module_object_marker(interface);
 
             Some(quote! {

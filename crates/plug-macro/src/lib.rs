@@ -11,8 +11,7 @@
 // [ ] dyn path
 
 use proc_macro2::TokenStream;
-use syn::{ItemImpl, ItemStruct, ItemTrait, Result, Token};
-use syn_derive::Parse;
+use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, parse::Parse};
 
 mod interface;
 mod object;
@@ -25,14 +24,28 @@ const NAME: &str = "plug";
 define!(attribute plug = plug_impl);
 define!(fn_like #[doc(hidden)] __import_advance = meta_passing::import_advance);
 
-#[derive(Parse)]
 enum Code {
-    #[parse(peek = Token![struct])]
     Struct(ItemStruct),
-    #[parse(peek = Token![trait])]
     Trait(ItemTrait),
-    #[parse(peek = Token![impl])]
     Impl(ItemImpl),
+}
+
+impl Parse for Code {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        let tmp = input.fork();
+        let _ = tmp.call(Attribute::parse_outer)?;
+        let target = tmp.lookahead1();
+
+        if target.peek(Token![trait]) {
+            input.parse().map(Self::Trait)
+        } else if target.peek(Token![impl]) {
+            input.parse().map(Self::Impl)
+        } else if target.peek(Token![struct]) {
+            input.parse().map(Self::Struct)
+        } else {
+            Err(target.error())
+        }
+    }
 }
 
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
