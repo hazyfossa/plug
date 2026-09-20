@@ -4,7 +4,11 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use facet::Facet;
 pub use plug_macro::plug;
+
+pub trait Reflected: for<'a> Facet<'a> {}
+impl<T: for<'a> Facet<'a>> Reflected for T {}
 
 // TODO: replace Box<dyn T> and eyre::Error
 // with Stored Objects (blocked on paradigm)
@@ -66,7 +70,7 @@ impl<T: Unpin> Future for Routine<T> {
 pub type Construct<T: Object> = Routine<eyre::Result<T>>;
 
 pub trait Object {
-    type Config;
+    type Config: Reflected;
     const TAG: &str;
 }
 
