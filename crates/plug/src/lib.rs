@@ -1,11 +1,11 @@
-use std::{
-    mem,
-    pin::{Pin, pin},
-    task::{Context, Poll, Waker},
-};
-
+use eyre::Result;
 use facet::Facet;
 pub use plug_macro::plug;
+use std::{
+    mem,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 pub trait Reflected: for<'a> Facet<'a> {}
 impl<T: for<'a> Facet<'a>> Reflected for T {}
@@ -13,42 +13,26 @@ impl<T: for<'a> Facet<'a>> Reflected for T {}
 // TODO: replace Box<dyn T> and eyre::Error
 // with Stored Objects (blocked on paradigm)
 
-pub enum Routine<T> {
-    Direct(T),
-    Resumable(Pin<Box<dyn Future<Output = T>>>),
+pub enum AsyncMethod<F: Future, const LIKELY_SYNC: bool = false> {
+    Direct(F::Output),
+    Deferred(F),
     Finished,
 }
 
-impl<T> Routine<T> {
-    #[inline]
-    pub fn define_direct(output: T) -> Self {
-        Self::Direct(output)
-    }
+impl<F, const LIKELY_SYNC: bool> Future for AsyncMethod<F, LIKELY_SYNC>
+where
+    F: Future,
+    F::Output: Unpin,
+{
+    type Output = F::Output;
 
-    #[inline]
-    pub fn define_deferred(f: impl Future<Output = T> + 'static) -> Self {
-        Self::Resumable(Box::pin(f))
-    }
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Safety: we only ever move F::Output out of Self::Direct
+        // so pinned data (F) is not moved
+        let this = unsafe { self.get_unchecked_mut() };
 
-    pub fn start(mut f: impl Future<Output = T> + Unpin + 'static) -> Self {
-        let future = pin!(&mut f);
-
-        // TODO: are there even reasonable futures which wake on first poll?
-        let ret = future.poll(&mut Context::from_waker(Waker::noop()));
-
-        match ret {
-            Poll::Ready(x) => Self::define_direct(x),
-            Poll::Pending => Self::define_deferred(f),
-        }
-    }
-}
-
-impl<T: Unpin> Future for Routine<T> {
-    type Output = T;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match &mut *self {
-            this @ Self::Direct(_) => {
+        match this {
+            Self::Direct(_) => {
                 let ret = match mem::replace(this, Self::Finished) {
                     Self::Direct(value) => value,
                     _ => unreachable!(), // guarded by match above
@@ -57,7 +41,10 @@ impl<T: Unpin> Future for Routine<T> {
                 Poll::Ready(ret)
             }
             // SAFETY: `fut` is pinned as `self` is (structual projection)
-            Self::Resumable(fut) => unsafe { Pin::new_unchecked(fut) }.poll(cx),
+            Self::Deferred(fut) => {
+                LIKELY_SYNC.then_some(core::hint::cold_path());
+                unsafe { Pin::new_unchecked(fut) }.poll(cx)
+            }
             Self::Finished => panic!("future polled after completion"),
         }
     }
@@ -66,33 +53,62 @@ impl<T: Unpin> Future for Routine<T> {
 // TODO(err): it is logical for the error enum to be associated with an interface, not
 // individual objects
 
-#[allow(type_alias_bounds)]
-pub type Construct<T: Object> = Routine<eyre::Result<T>>;
-
 pub trait Object {
     type Config: Reflected;
     const TAG: &str;
 }
 
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
+#[allow(async_fn_in_trait)]
 pub trait Init: Object + Sized {
-    fn init(config: &Self::Config) -> Construct<Self>;
+    // TODO: async init via AsyncMethod
+    async fn init(config: &Self::Config) -> Result<Self>;
 }
 
-pub trait DynamicObject {
-    fn tag() -> &'static str;
-    fn init(config: ()) -> Construct<Box<Self>>;
-}
+#[cfg(feature = "dyn")]
+#[doc(hidden)]
+pub mod __dyn_codegen {
+    use super::*;
 
-impl<T> DynamicObject for T
-where
-    T: Object + Init,
-{
-    fn tag() -> &'static str {
-        T::TAG
+    use facet_value::Value;
+
+    type DynAsyncMethod<T, const LIKELY_SYNC: bool = false> =
+        AsyncMethod<Pin<Box<dyn Future<Output = T>>>, LIKELY_SYNC>;
+
+    impl<F: Future + 'static, const LIKELY_SYNC: bool> AsyncMethod<F, LIKELY_SYNC>
+    where
+        F::Output: Unpin,
+    {
+        fn store_dynamic(self) -> DynAsyncMethod<F::Output, LIKELY_SYNC> {
+            match self {
+                Self::Deferred(fut) => DynAsyncMethod::Deferred(Box::pin(fut)),
+                Self::Direct(output) => DynAsyncMethod::Direct(output),
+                Self::Finished => DynAsyncMethod::Finished,
+            }
+        }
     }
 
-    fn init(config: ()) -> Construct<Box<Self>> {
-        todo!()
+    pub trait DynamicObject {
+        fn tag() -> &'static str;
+        fn init(config: Value) -> DynAsyncMethod<Result<Box<Self>>>;
+    }
+
+    impl<T> DynamicObject for T
+    where
+        T: Object + Init,
+    {
+        fn tag() -> &'static str {
+            T::TAG
+        }
+
+        fn init(config: Value) -> DynAsyncMethod<Result<Box<Self>>> {
+            AsyncMethod::Deferred(async {
+                let config: T::Config = facet_value::from_value(config)?;
+                let ret = <T as Init>::init(&config).await?;
+                let stored_self = Box::new(ret);
+                Ok(stored_self)
+            })
+            .store_dynamic()
+        }
     }
 }

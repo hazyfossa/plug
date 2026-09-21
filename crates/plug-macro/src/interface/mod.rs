@@ -347,6 +347,9 @@ impl InterfaceShape {
         } = match self.attrs.mode.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
             Dispatch::Static => {
+                // TODO: consider making "dyn" the default, switch to static when first impl seen
+                // Pros: no annoying error on first write
+                // Cons: goes against "make perf cost explicit"
                 let impls = self.resolve_impls().ok_or(
                     amyhow!(self.name => "At least one impl is required for interface dispatch"),
                 )?;
@@ -420,15 +423,34 @@ fn static_dispatch(impls: Vec<Path>, methods: Vec<Method>) -> Result<DispatchCod
         .map(|x| x.last_ident())
         .collect::<Result<_>>()?;
 
+    let tags: Vec<_> = impls
+        .iter()
+        .map(|x| quote! { <#x as ::plug::Object>::TAG })
+        .collect();
+
     let codegen = quote! {
-        // TODO: string (::TAG) <-> enum
-        pub enum Tag {
-            #(#variants)*
+        pub enum Object { #(
+            #variants(#impls)
+        )*}
+
+        #[derive(Debug, ::facet::Facet)]
+        #[repr(C)]
+        pub enum Tag { #(#variants)* }
+
+        impl ::core::str::FromStr for Tag {
+            type Err = String; // TODO
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value {
+                    #(#tags => Ok(Self::#variants),)*
+                    // TODO: proper error
+                    other => Err(format!("Unrecognized value: {other}. Possible states are: {ALL:?}")),
+                }
+            }
         }
 
-        pub enum Object { #(
-            #variants(#impls))*
-        }
+        pub const ALL: &[&'static str] = &[#(#tags)*];
+
+
     };
 
     // Product: (Methods x Impls)

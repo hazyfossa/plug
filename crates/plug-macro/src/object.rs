@@ -58,11 +58,11 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
     let config_ident = format_ident!("{name}Config");
 
     let maybe_empty_init = state.is_empty().then_some(quote! {
-        // #[automatically_derived]
+        #[automatically_derived]
         impl ::plug::Init for #name {
-            fn init(_: &Self::Config) -> ::plug::Construct<Self> {
+            fn init(_: &Self::Config) -> impl Future<Output = ::eyre::Result<Self>> {
                 let instance = #name {};
-                ::plug::Routine::define_direct(Ok(instance))
+                core::future::ready((Ok(instance)))
             }
         }
     });
