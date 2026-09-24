@@ -70,7 +70,7 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
     let content = quote! {
         #(#attrs)*
 
-        #[derive(::facet::Facet)]
+        #[derive(::facet::Facet, Default)]
         pub struct #config_ident {
             #(#config,)*
         }

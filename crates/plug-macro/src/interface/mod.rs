@@ -4,8 +4,8 @@ use darling::FromAttributes;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, Path, Result, Signature, Token,
-    TraitItem, TraitItemFn, Type,
+    Attribute, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, ItemTrait, Pat, Path, Result,
+    Signature, Token, TraitItem, TraitItemFn, Type,
     parse::{Nothing, Parse, ParseStream},
     parse_quote,
     spanned::Spanned,
@@ -99,28 +99,6 @@ enum FnKind {
     Const,
 }
 
-impl FnKind {
-    fn parse(sig: &syn::Signature) -> Result<Self> {
-        let is_async = sig.asyncness.is_some();
-        let is_const = sig.constness.is_some();
-
-        if is_async && is_const {
-            bail!(sig.constness.unwrap() => "constant async methods are impossible")
-        }
-
-        let kind = if is_async {
-            // TODO: sync path optimization
-            Self::Async { sync_path: false }
-        } else if is_const {
-            Self::Const
-        } else {
-            Self::Regular
-        };
-
-        Ok(kind)
-    }
-}
-
 enum MethodKind {
     Stateful,
     Associated,
@@ -135,34 +113,63 @@ impl MethodKind {
     }
 }
 
+#[derive(FromAttributes)]
+#[darling(attributes(plug))]
+struct MethodAttrs {
+    #[darling(default, rename = "final")]
+    is_final: bool,
+    #[darling(default, rename = "const")]
+    is_const: bool,
+    #[darling(default, rename = "sync")]
+    is_sync_path: bool,
+}
+
 struct Method {
-    dispatch_signature: syn::Signature,
+    signature: syn::Signature,
     fn_kind: FnKind,
+    is_final: bool,
 }
 
 impl Method {
     // This function will leave the signature as appropriate for a trait item
     // while storing an internal copy for dispatch
-    fn parse(sig: &mut Signature) -> Result<Self> {
-        let fn_kind = FnKind::parse(sig)?;
+    fn parse(attrs: &mut Vec<Attribute>, sig: &mut Signature) -> Result<Self> {
+        let attrs: MethodAttrs = parse_attrs(attrs)?;
 
-        // Rust does not support const fn in trait natively
-        // Const-ness will be restored by dispatcher
-        let dispatch_signature = sig.clone();
-        sig.constness = None;
+        if attrs.is_const {
+            sig.constness = Some(parse_quote!(const));
+        }
+
+        let is_const = sig.constness.is_some();
+        let is_async = sig.asyncness.is_some();
+
+        if is_async && is_const {
+            bail!(sig.asyncness.unwrap() => "constant async methods are impossible")
+        }
+
+        let fn_kind = if is_async {
+            FnKind::Async {
+                sync_path: attrs.is_sync_path,
+            }
+        } else if is_const {
+            FnKind::Const
+        } else {
+            FnKind::Regular
+        };
 
         Ok(Self {
-            dispatch_signature,
             fn_kind,
+            signature: sig.clone(),
+            is_final: attrs.is_final,
         })
     }
 
     fn kind(&self) -> MethodKind {
-        MethodKind::parse(&self.dispatch_signature)
+        MethodKind::parse(&self.signature)
     }
 
     fn name(&self) -> Ident {
-        let ident = &self.dispatch_signature.ident;
+        let ident = &self.signature.ident;
 
         match self.fn_kind {
             FnKind::Const => format_ident!("__const_{ident}"),
@@ -173,7 +180,7 @@ impl Method {
     fn args(&self) -> Result<Vec<&Ident>> {
         let mut args: Vec<&Ident> = Vec::new();
 
-        for arg in &self.dispatch_signature.inputs {
+        for arg in &self.signature.inputs {
             match arg {
                 FnArg::Receiver(_) => { /* handled by disciminant parse */ }
 
@@ -214,13 +221,6 @@ impl Method {
         let content = quote! { #provider #call };
         Ok(content)
     }
-}
-
-#[derive(FromAttributes)]
-#[darling(attributes(plug))]
-struct MethodAttrs {
-    #[darling(default, rename = "final")]
-    is_final: bool,
 }
 
 struct InterfaceShape {
@@ -273,20 +273,20 @@ impl InterfaceShape {
 
     // Returns whether the method is implementable
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
-        // TODO: modifers that we want but syn doesn't parse: final
-        // for now, we substitute via custom attr
-        let attrs: MethodAttrs = parse_attrs(&mut input.attrs)?;
+        let sig = &mut input.sig;
+        let method = Method::parse(&mut input.attrs, sig)?;
 
-        if attrs.is_final {
-            self.final_methods.push(input.clone());
-            return Ok(false);
+        if method.is_final {
+            return Ok(true);
         }
 
-        let method = Method::parse(&mut input.sig)?;
+        // Const fn is not supported in trait by rustc
+        // method.signature will still be const, as appropriate for dispatch
+        sig.constness = None;
 
         if matches!(method.fn_kind, FnKind::Const) && !self.get_dispatch_kind().supports_const() {
             bail!(
-                method.dispatch_signature.constness =>
+                sig.ident =>
                 "Const fn is not supported when using dynamic dispatch"
             );
         }
@@ -301,7 +301,7 @@ impl InterfaceShape {
         let mut const_methods = HashSet::new();
 
         for method in &self.dispatchable_methods {
-            let ident = &method.dispatch_signature.ident;
+            let ident = &method.signature.ident;
             match method.fn_kind {
                 FnKind::Const => {
                     const_methods.insert(ident.clone());
@@ -392,7 +392,7 @@ fn provide_call_context(kind: &MethodKind, impl_: &Path) -> Result<TokenStream> 
 fn static_dispatch_method(impls: &[Path], method: Method) -> Result<TokenStream> {
     let kind = method.kind();
     let call_via_ctx = method.call_via_context()?;
-    let mut sig = method.dispatch_signature;
+    let mut sig = method.signature;
 
     let determinant = match kind {
         MethodKind::Stateful => quote! { self },
@@ -523,30 +523,27 @@ impl Impl {
 
     // fn parse(input: &mut ImplItem) -> Result<Self> {}
 
-    fn register_const_fn(&mut self, mut func: ImplItemFn) {
-        func.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
-        func.attrs.push(parse_quote!(#[doc(hidden)]));
-        func.sig.ident = format_ident!("__const_{}", &func.sig.ident);
+    fn copy_to_inherent(&mut self, func: &ImplItemFn) {
+        let mut inherent = func.clone();
 
-        self.inherents.push(func.to_token_stream());
+        inherent.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
+        inherent.attrs.push(parse_quote!(#[doc(hidden)]));
+        inherent.sig.ident = format_ident!("__const_{}", &func.sig.ident);
+
+        self.inherents.push(inherent.to_token_stream());
     }
 
     fn register_method(&mut self, func: &mut ImplItemFn) -> Result<()> {
-        let method = Method::parse(&mut func.sig)?;
+        let method = Method::parse(&mut func.attrs, &mut func.sig)?;
 
         if matches!(method.fn_kind, FnKind::Const) {
-            // TODO: here we undo what Method::parse did. Reconsider Method::parse.
-            let const_fn = {
-                let mut x = func.clone();
-                x.sig.constness = Some(parse_quote!(const));
-                x
-            };
-
-            self.register_const_fn(const_fn);
+            self.copy_to_inherent(func);
 
             let call_inherent = method.call_via_self()?;
             func.block = parse_quote!({ #call_inherent });
         };
+
+        func.sig.constness = None;
 
         Ok(())
     }

@@ -54,7 +54,7 @@ where
 // individual objects
 
 pub trait Object {
-    type Config: Reflected;
+    type Config: Reflected + Default;
     const TAG: &str;
 }
 

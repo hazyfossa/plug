@@ -33,7 +33,8 @@ mod implement {
             true
         }
 
-        const fn bar(&self) -> u8 {
+        #[plug(const)]
+        fn bar(&self) -> u8 {
             0
         }
     }
