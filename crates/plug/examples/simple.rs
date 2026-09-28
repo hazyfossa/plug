@@ -1,15 +1,12 @@
+// TODO: test `mod`
+
 use plug::plug;
 
-#[plug(implement::TestImpl)]
+#[plug(mod(implement))]
 trait Test {
     fn associated() -> String;
     async fn foo(&self) -> bool;
     const fn bar(&self) -> u8;
-
-    #[plug(final)]
-    fn fas() -> u16 {
-        0
-    }
 }
 
 mod implement {
@@ -42,7 +39,7 @@ mod implement {
 
 fn do_something(x: Test::Object) {
     let a = x.bar();
-    let b = Test::Object::associated(Test::Tag::TestImpl);
+    let b = Test::Object::associated(Test::Tag::implement);
 }
 
 fn main() {}

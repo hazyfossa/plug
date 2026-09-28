@@ -90,6 +90,12 @@ impl Parse for InterfaceAttrs {
     }
 }
 
+// Technically, this is a self-referrential struct
+struct ImplRef {
+    path: Path,
+    variant: Ident,
+}
+
 //
 
 #[derive(Clone)]
@@ -324,20 +330,27 @@ impl InterfaceShape {
         Ok(exported_meta)
     }
 
-    fn resolve_impls(&self) -> Option<Vec<Path>> {
-        let mut paths = self.attrs.paths.clone()?;
+    fn resolve_static_impls(&self) -> Option<Vec<ImplRef>> {
+        let paths = self.attrs.paths.as_ref().filter(|p| !p.is_empty())?;
 
-        if paths.is_empty() {
-            return None;
-        }
+        let impls = paths
+            .iter()
+            .map(|path| {
+                let variant = path.last_ident().unwrap().clone();
 
-        if matches!(self.attrs.mode, Mode::FromMod) {
-            for path in &mut paths {
-                path.extend(registered_module_object_marker(&self.name));
-            }
-        }
+                let path = match self.attrs.mode {
+                    Mode::FromMod => {
+                        let marker = registered_module_object_marker(&self.name);
+                        path.join(marker)
+                    }
+                    _ => path.clone(),
+                };
 
-        Some(paths)
+                ImplRef { variant, path }
+            })
+            .collect();
+
+        Some(impls)
     }
 
     fn dispatch(self) -> Result<TokenStream> {
@@ -350,8 +363,8 @@ impl InterfaceShape {
                 // TODO: consider making "dyn" the default, switch to static when first impl seen
                 // Pros: no annoying error on first write
                 // Cons: goes against "make perf cost explicit"
-                let impls = self.resolve_impls().ok_or(
-                    amyhow!(self.name => "At least one impl is required for interface dispatch"),
+                let impls = self.resolve_static_impls().ok_or(
+                    amyhow!(self.name => "At least one impl or `dyn` is required for interface dispatch"),
                 )?;
 
                 static_dispatch(impls, self.dispatchable_methods)?
@@ -379,17 +392,17 @@ struct DispatchCode {
 }
 
 // TODO: consider instead caching variant (needs impl to be a newtype with self-ref field)
-fn provide_call_context(kind: &MethodKind, impl_: &Path) -> Result<TokenStream> {
-    let variant = impl_.last_ident()?;
+fn provide_call_context(kind: &MethodKind, impl_: &ImplRef) -> Result<TokenStream> {
+    let ImplRef { path, variant } = impl_;
     let content = match kind {
         MethodKind::Stateful => quote! { Self::#variant(obj) => obj. },
-        MethodKind::Associated => quote! { Tag::#variant => #impl_:: },
+        MethodKind::Associated => quote! { Tag::#variant => #path:: },
     };
 
     Ok(content)
 }
 
-fn static_dispatch_method(impls: &[Path], method: Method) -> Result<TokenStream> {
+fn static_dispatch_method(impls: &Vec<ImplRef>, method: Method) -> Result<TokenStream> {
     let kind = method.kind();
     let call_via_ctx = method.call_via_context()?;
     let mut sig = method.signature;
@@ -417,20 +430,18 @@ fn static_dispatch_method(impls: &[Path], method: Method) -> Result<TokenStream>
     Ok(content)
 }
 
-fn static_dispatch(impls: Vec<Path>, methods: Vec<Method>) -> Result<DispatchCode> {
-    let variants: Vec<_> = impls
-        .iter()
-        .map(|x| x.last_ident())
-        .collect::<Result<_>>()?;
+fn static_dispatch(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<DispatchCode> {
+    let paths: Vec<_> = impls.iter().map(|x| &x.path).collect();
+    let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
 
-    let tags: Vec<_> = impls
+    let tags: Vec<_> = paths
         .iter()
         .map(|x| quote! { <#x as ::plug::Object>::TAG })
         .collect();
 
     let codegen = quote! {
         pub enum Object { #(
-            #variants(#impls)
+            #variants(#paths)
         )*}
 
         #[derive(Debug, ::facet::Facet)]
@@ -501,7 +512,7 @@ parse!(
 );
 
 fn registered_module_object_marker(interface: &Ident) -> Ident {
-    format_ident!("registered {interface} impl for this module")
+    format_ident!("registered_{interface}_impl_for_this_module")
 }
 
 struct Impl {
@@ -552,11 +563,14 @@ impl Impl {
         let object = self.object.clone();
         let inherents = self.inherents.clone();
 
-        let cons = continue_with_interface_meta(Context {
+        let ctx = Context {
             object: self.object,
             interface: self.interface,
             impl_methods: self.methods.into(),
-        })?;
+        };
+
+        let meta = ctx.interface.join(format_ident!("__meta"));
+        let cons = with_import!(#simple meta => register_impl_inner(ctx))?;
 
         let content = quote! {
             #cons
@@ -578,11 +592,6 @@ parse!(
     }
 );
 
-fn continue_with_interface_meta(ctx: Context) -> Result<TokenStream> {
-    let meta = ctx.interface.sibling(|_| format_ident!("__meta"))?;
-    with_import!(#simple meta => register_impl_inner(ctx))
-}
-
 // TODO: this only exists to provide spans, otherwise could be just `Method`
 parse!(
     struct ImplementedMethod {
@@ -590,9 +599,21 @@ parse!(
     }
 );
 
+fn interface_from_impl(input: &ItemImpl) -> Option<Path> {
+    let mut path = input.trait_.clone()?.0;
+    let last_ident = path.segments.pop()?.ident;
+    let _ = path.segments.pop_punct()?;
+
+    if last_ident.to_string() != "Interface" {
+        return None;
+    };
+
+    Some(path)
+}
+
 pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
-    let interface = match input.trait_ {
-        Some((ref path, _)) => path.clone(),
+    let interface = match interface_from_impl(&input) {
+        Some(x) => x,
         None => bail!(=> "This macro only makes sense for interface implementations"),
     };
 
@@ -634,7 +655,7 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
 
             Some(quote! {
                 #[doc(hidden)]
-                type #marker = #object;
+                pub(crate) type #marker = #object;
             })
         }
         Mode::Dynamic => todo!("dyn registration"),

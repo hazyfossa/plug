@@ -172,11 +172,10 @@ pub(crate) use parse;
 
 pub trait PathExt {
     fn last_ident(&self) -> Result<&Ident>;
-    fn sibling(&self, f: impl Fn(&Ident) -> Ident) -> Result<Path>;
-    fn extend(&mut self, ident: Ident);
+    fn join(&self, ident: Ident) -> Path;
 }
 
-impl PathExt for syn::Path {
+impl PathExt for Path {
     fn last_ident(&self) -> Result<&Ident> {
         match self.segments.last() {
             Some(x) => Ok(&x.ident),
@@ -184,24 +183,15 @@ impl PathExt for syn::Path {
         }
     }
 
-    fn sibling(&self, f: impl Fn(&Ident) -> Ident) -> Result<Path> {
-        let mut path = self.clone();
+    fn join(&self, ident: Ident) -> Path {
+        let mut new_path = self.clone();
 
-        let ident = match path.segments.last_mut() {
-            Some(x) => &mut x.ident,
-            None => bail!(path => "expected non-empty path"),
-        };
-
-        *ident = f(ident);
-
-        Ok(path)
-    }
-
-    fn extend(&mut self, ident: Ident) {
-        self.segments.push(syn::PathSegment {
+        new_path.segments.push(syn::PathSegment {
             ident,
             arguments: syn::PathArguments::None,
-        })
+        });
+
+        new_path
     }
 }
 
