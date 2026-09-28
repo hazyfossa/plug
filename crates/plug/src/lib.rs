@@ -1,16 +1,8 @@
 use eyre::Result;
 use facet::Facet;
 pub use plug_macro::plug;
-use std::{
-    mem,
-    pin::Pin,
-    task::{Context, Poll},
-};
 
 mod future;
-
-pub trait Reflected: for<'a> Facet<'a> {}
-impl<T: for<'a> Facet<'a>> Reflected for T {}
 
 // TODO: replace Box<dyn T> and eyre::Error
 // with Stored Objects (blocked on paradigm)
@@ -18,9 +10,16 @@ impl<T: for<'a> Facet<'a>> Reflected for T {}
 // TODO(err): it is logical for the error enum to be associated with an interface, not
 // individual objects
 
+pub trait InterfaceDescriptor {
+    type Tag: PartialEq + 'static;
+    const ALL: &[Self::Tag];
+}
+
+pub trait Reflected: for<'a> Facet<'a> {}
+impl<T: for<'a> Facet<'a>> Reflected for T {}
+
 pub trait Object {
     type Config: Reflected + Default;
-    const TAG: &str;
 }
 
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
@@ -28,6 +27,10 @@ pub trait Object {
 pub trait Init: Object + Sized {
     // TODO: async init via AsyncMethod
     async fn init(config: &Self::Config) -> Result<Self>;
+}
+
+pub trait Tagged<I: InterfaceDescriptor> {
+    const TAG: I::Tag;
 }
 
 #[cfg(feature = "dyn")]
@@ -38,16 +41,17 @@ pub mod __dyn_codegen {
 
     use facet_value::Value;
 
-    pub trait DynamicObject {
-        fn tag() -> &'static str;
+    pub trait DynamicImpl<I: InterfaceDescriptor> {
+        fn tag() -> I::Tag;
         fn init(config: Value) -> DynAsyncMethod<Result<Box<Self>>>;
     }
 
-    impl<T> DynamicObject for T
+    impl<I, T> DynamicImpl<I> for T
     where
-        T: Object + Init,
+        I: InterfaceDescriptor,
+        T: Init + Tagged<I> + Object,
     {
-        fn tag() -> &'static str {
+        fn tag() -> I::Tag {
             T::TAG
         }
 

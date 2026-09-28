@@ -96,6 +96,14 @@ struct ImplRef {
     variant: Ident,
 }
 
+impl ImplRef {
+    // Uses well-known items from purescope: Descriptor
+    fn tag(&self) -> TokenStream {
+        let path = &self.path;
+        quote! { <#path as ::plug::Tagged<Descriptor>>::TAG }
+    }
+}
+
 //
 
 #[derive(Clone)]
@@ -353,9 +361,11 @@ impl InterfaceShape {
         Some(impls)
     }
 
-    fn dispatch(self) -> Result<TokenStream> {
+    fn codegen(self) -> Result<TokenStream> {
         let DispatchCode {
-            codegen,
+            all_tags,
+            object,
+            other_codegen,
             dispatched_methods,
         } = match self.attrs.mode.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
@@ -374,7 +384,27 @@ impl InterfaceShape {
         let final_methods = self.final_methods;
 
         let content = quote! {
-            #codegen
+            #object
+            #other_codegen
+
+            // TODO: arbitrarily represented tags
+            #[derive(PartialEq)]
+            pub struct Tag(&'static str);
+
+            // TODO: tag parsing with exhaustive hints
+            // TODO: make this a trait `Tag` ?
+            impl Tag {
+                pub(crate) const fn define(repr: &'static str) -> Self {
+                    Self(repr)
+                }
+            }
+
+            pub struct Descriptor;
+
+            impl ::plug::InterfaceDescriptor for Descriptor {
+                type Tag = Tag;
+                const ALL: &[Self::Tag] = #all_tags;
+            }
 
             impl Object {
                 #(#final_methods)*
@@ -387,16 +417,20 @@ impl InterfaceShape {
 }
 
 struct DispatchCode {
-    codegen: TokenStream,
+    all_tags: TokenStream,
+    object: TokenStream,
     dispatched_methods: Vec<TokenStream>,
+    other_codegen: Option<TokenStream>,
 }
 
-// TODO: consider instead caching variant (needs impl to be a newtype with self-ref field)
 fn provide_call_context(kind: &MethodKind, impl_: &ImplRef) -> Result<TokenStream> {
     let ImplRef { path, variant } = impl_;
     let content = match kind {
         MethodKind::Stateful => quote! { Self::#variant(obj) => obj. },
-        MethodKind::Associated => quote! { Tag::#variant => #path:: },
+        MethodKind::Associated => {
+            let tag = impl_.tag();
+            quote! { #tag => #path:: }
+        }
     };
 
     Ok(content)
@@ -424,7 +458,15 @@ fn static_dispatch_method(impls: &Vec<ImplRef>, method: Method) -> Result<TokenS
         .collect::<Result<_>>()?;
 
     let content = quote! { pub #sig {
-        match #determinant { #(#branches)* }
+        match #determinant {
+            #(#branches,)*
+
+            // Completely omitting this branch requires Tag::define to be unsafe
+            // TODO: measure perf
+            // TODO: we can already omit this branch for stateful methods of static interfaces
+            // TODO: for static traits, we can have tag_repr(enum), which the compiler can prove to be total
+            _ => unreachable!("Caught an invalid tag. Most likely, an erroneous ::define exists somewhere."),
+        }
     }};
 
     Ok(content)
@@ -434,34 +476,12 @@ fn static_dispatch(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dispatch
     let paths: Vec<_> = impls.iter().map(|x| &x.path).collect();
     let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
 
-    let tags: Vec<_> = paths
-        .iter()
-        .map(|x| quote! { <#x as ::plug::Object>::TAG })
-        .collect();
+    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
 
-    let codegen = quote! {
+    let object = quote! {
         pub enum Object { #(
             #variants(#paths)
         )*}
-
-        #[derive(Debug, ::facet::Facet)]
-        #[repr(C)]
-        pub enum Tag { #(#variants)* }
-
-        impl ::core::str::FromStr for Tag {
-            type Err = String; // TODO
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                match value {
-                    #(#tags => Ok(Self::#variants),)*
-                    // TODO: proper error
-                    other => Err(format!("Unrecognized value: {other}. Possible states are: {ALL:?}")),
-                }
-            }
-        }
-
-        pub const ALL: &[&'static str] = &[#(#tags)*];
-
-
     };
 
     // Product: (Methods x Impls)
@@ -470,9 +490,13 @@ fn static_dispatch(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dispatch
         .map(|m| static_dispatch_method(&impls, m))
         .collect::<Result<_>>()?;
 
+    let all_tags = quote! { &[#(#tags)*] };
+
     Ok(DispatchCode {
-        codegen,
+        all_tags,
+        object,
         dispatched_methods,
+        other_codegen: None,
     })
 }
 
@@ -487,7 +511,7 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Resul
     let name = shape.name.clone(); // TODO
     let meta = shape.export_meta()?;
 
-    let dispatched = shape.dispatch()?;
+    let dispatched = shape.codegen()?;
 
     let content = quote! {
         #[allow(non_snake_case)]
@@ -626,6 +650,15 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         other => bail!(other => "Interfaces can only be implemented on objects"),
     };
 
+    let tag_type = quote! { <#interface::Descriptor as ::plug::InterfaceDescriptor>::Tag };
+
+    // TODO: tag overrides ()
+    let tag = quote! {
+        impl ::plug::Tagged<#interface::Descriptor> for #object {
+            const TAG: #tag_type = #tag_type::define(#object::inherent_tag());
+        }
+    };
+
     let mut impl_ = Impl::new(interface, object);
 
     for item in &mut input.items {
@@ -638,6 +671,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     let codegen = impl_.codegen()?;
     let content = quote! {
         #input
+        #tag
         #codegen
     };
     Ok(content)

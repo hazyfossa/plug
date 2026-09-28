@@ -1,5 +1,5 @@
 use proc_macro2::{Literal, TokenStream};
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{Field, ItemStruct, Result, Type, spanned::Spanned};
 
 use crate::bail;
@@ -35,8 +35,8 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
     let tag: Option<Literal> = syn::parse2(attrs)?; // TODO
 
     let tag = tag
-        .map(|x| x.to_string())
-        .unwrap_or(input.ident.to_string());
+        .map(|x| x.to_token_stream())
+        .unwrap_or(input.ident.to_string().to_token_stream());
 
     let mut config: Vec<Field> = Vec::new();
     let mut state: Vec<Field> = Vec::new();
@@ -83,9 +83,21 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
             #(#state,)*
         }
 
+        // TODO: are non-string inherent tags required?
+        //
+        // if yes, we will need to export raw tokens from object
+        // which is another compile-time cost to import
+        //
+        // alternatively, we might do the trick that serde does with "default"
+        // and require passing a "tag-defining function"
+        impl #name {
+            pub(crate) const fn inherent_tag() -> &'static str {
+                #tag
+            }
+        }
+
         impl ::plug::Object for #name {
             type Config = #config_ident;
-            const TAG: &str = #tag;
         }
 
         #maybe_empty_init
