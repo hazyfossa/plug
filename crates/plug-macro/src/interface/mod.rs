@@ -12,11 +12,14 @@ use syn::{
 };
 
 use crate::{
-    amyhow, bail, ensure_empty_tokens,
+    bail, ensure_empty_tokens,
     meta_passing::{export, with_import},
     parse::{Many, PathExt, parse, parse_attrs},
     retain_by_mask,
 };
+
+mod direct;
+mod dynamic;
 
 //
 
@@ -32,7 +35,7 @@ impl Mode {
     fn dispatch_kind(&self) -> Dispatch {
         match self {
             Self::Dynamic => Dispatch::Dynamic,
-            _ => Dispatch::Static,
+            _ => Dispatch::Direct,
         }
     }
 }
@@ -41,22 +44,31 @@ impl Mode {
 enum Dispatch {
     /// similar to enum-dispatch
     #[default]
-    Static,
+    Direct,
 
     /// similar to rustc's trait objects
-    /// (uses them under the hood, in fact)
     Dynamic,
 }
 
 impl Dispatch {
     fn supports_const(&self) -> bool {
-        matches!(self, Self::Static)
+        matches!(self, Self::Direct)
     }
 }
+
+struct DispatchCode {
+    all_tags: TokenStream,
+    object: TokenStream,
+    dispatched_methods: Vec<TokenStream>,
+    other_codegen: Option<TokenStream>,
+}
+
+//
 
 pub struct InterfaceAttrs {
     mode: Mode,
     paths: Option<Vec<Path>>,
+    // tag_repr: Type
 }
 
 // TODO: derive this
@@ -87,20 +99,6 @@ impl Parse for InterfaceAttrs {
         let paths = paths.map(|x| x.inner);
 
         Ok(InterfaceAttrs { mode, paths })
-    }
-}
-
-// Technically, this is a self-referrential struct
-struct ImplRef {
-    path: Path,
-    variant: Ident,
-}
-
-impl ImplRef {
-    // Uses well-known items from purescope: Descriptor
-    fn tag(&self) -> TokenStream {
-        let path = &self.path;
-        quote! { <#path as ::plug::Tagged<Descriptor>>::TAG }
     }
 }
 
@@ -139,7 +137,10 @@ struct MethodAttrs {
 }
 
 struct Method {
-    signature: syn::Signature,
+    object_signature: syn::Signature,
+    args: Vec<Ident>,
+
+    kind: MethodKind,
     fn_kind: FnKind,
     is_final: bool,
 }
@@ -148,18 +149,20 @@ impl Method {
     // This function will leave the signature as appropriate for a trait item
     // while storing an internal copy for dispatch
     fn parse(attrs: &mut Vec<Attribute>, sig: &mut Signature) -> Result<Self> {
+        let kind = MethodKind::parse(sig);
+
         let attrs: MethodAttrs = parse_attrs(attrs)?;
 
-        if attrs.is_const {
-            sig.constness = Some(parse_quote!(const));
-        }
-
-        let is_const = sig.constness.is_some();
-        let is_async = sig.asyncness.is_some();
+        let is_const = sig.constness.is_some() || attrs.is_const;
+        let is_async = sig.asyncness.is_some(); // TODO: support `impl Future` syntax
 
         if is_async && is_const {
             bail!(sig.asyncness.unwrap() => "constant async methods are impossible")
         }
+
+        // Const methods are not supported as trait items by rustc
+        // const-ness is restored by redirecting the call chain through an inherent impl
+        sig.constness = None;
 
         let fn_kind = if is_async {
             FnKind::Async {
@@ -171,19 +174,48 @@ impl Method {
             FnKind::Regular
         };
 
+        //
+
+        let mut object_signature = sig.clone();
+
+        if matches!(fn_kind, FnKind::Const) {
+            object_signature.constness = parse_quote!(const);
+        }
+
+        if matches!(kind, MethodKind::Associated) {
+            object_signature.inputs.insert(0, parse_quote!(tag: Tag));
+        }
+
+        //
+
+        let mut args = Vec::new();
+
+        for arg in &sig.inputs {
+            match arg {
+                FnArg::Receiver(_) => {}
+
+                // TODO: this will become more complex when we add versioning
+                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
+                    args.push(arg_p.ident.clone());
+                }
+
+                other => bail!(other => "unsupported syntax"),
+            }
+        }
+
+        //
+
         Ok(Self {
+            object_signature,
+            args,
+            kind,
             fn_kind,
-            signature: sig.clone(),
             is_final: attrs.is_final,
         })
     }
 
-    fn kind(&self) -> MethodKind {
-        MethodKind::parse(&self.signature)
-    }
-
-    fn name(&self) -> Ident {
-        let ident = &self.signature.ident;
+    fn call_name(&self) -> Ident {
+        let ident = &self.object_signature.ident;
 
         match self.fn_kind {
             FnKind::Const => format_ident!("__const_{ident}"),
@@ -191,49 +223,32 @@ impl Method {
         }
     }
 
-    fn args(&self) -> Result<Vec<&Ident>> {
-        let mut args: Vec<&Ident> = Vec::new();
+    fn call(&self, target: Path) -> Result<TokenStream> {
+        let name = self.call_name();
+        let args = &self.args;
 
-        for arg in &self.signature.inputs {
-            match arg {
-                FnArg::Receiver(_) => { /* handled by disciminant parse */ }
+        let access = match self.kind {
+            MethodKind::Associated => quote! { :: },
+            MethodKind::Stateful => quote! { . },
+        };
 
-                // TODO: this will become more complex when we add versioning
-                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
-                    args.push(&arg_p.ident);
-                }
-
-                other => bail!(other => "unsupported syntax"),
-            }
-        }
-
-        Ok(args)
-    }
-
-    // Requires prepending `provider`. or `Provider`:: as appropriate
-    fn call_via_context(&self) -> Result<TokenStream> {
-        let name = self.name();
-        let args = self.args()?;
-
-        let content = match &self.fn_kind {
+        let call_body = match &self.fn_kind {
             FnKind::Async { sync_path: true } => todo!("sync path optimization"),
             FnKind::Async { sync_path: false } => quote! { #name( #(#args)* ).await },
             _direct_call => quote! { #name( #(#args)* ) },
         };
 
+        let content = quote! { #target #access #call_body };
         Ok(content)
     }
 
     fn call_via_self(&self) -> Result<TokenStream> {
-        let provider = match self.kind() {
-            MethodKind::Associated => quote! { Self:: },
-            MethodKind::Stateful => quote! { self. },
+        let target = match self.kind {
+            MethodKind::Associated => parse_quote!(Self),
+            MethodKind::Stateful => parse_quote!(self),
         };
 
-        let call = self.call_via_context()?;
-
-        let content = quote! { #provider #call };
-        Ok(content)
+        self.call(target)
     }
 }
 
@@ -291,12 +306,8 @@ impl InterfaceShape {
         let method = Method::parse(&mut input.attrs, sig)?;
 
         if method.is_final {
-            return Ok(true);
+            return Ok(false);
         }
-
-        // Const fn is not supported in trait by rustc
-        // method.signature will still be const, as appropriate for dispatch
-        sig.constness = None;
 
         if matches!(method.fn_kind, FnKind::Const) && !self.get_dispatch_kind().supports_const() {
             bail!(
@@ -315,7 +326,7 @@ impl InterfaceShape {
         let mut const_methods = HashSet::new();
 
         for method in &self.dispatchable_methods {
-            let ident = &method.signature.ident;
+            let ident = &method.object_signature.ident;
             match method.fn_kind {
                 FnKind::Const => {
                     const_methods.insert(ident.clone());
@@ -338,30 +349,9 @@ impl InterfaceShape {
         Ok(exported_meta)
     }
 
-    fn resolve_static_impls(&self) -> Option<Vec<ImplRef>> {
-        let paths = self.attrs.paths.as_ref().filter(|p| !p.is_empty())?;
-
-        let impls = paths
-            .iter()
-            .map(|path| {
-                let variant = path.last_ident().unwrap().clone();
-
-                let path = match self.attrs.mode {
-                    Mode::FromMod => {
-                        let marker = registered_module_object_marker(&self.name);
-                        path.join(marker)
-                    }
-                    _ => path.clone(),
-                };
-
-                ImplRef { variant, path }
-            })
-            .collect();
-
-        Some(impls)
-    }
-
     fn codegen(self) -> Result<TokenStream> {
+        let final_methods = self.final_methods.clone(); // TODO
+
         let DispatchCode {
             all_tags,
             object,
@@ -369,19 +359,8 @@ impl InterfaceShape {
             dispatched_methods,
         } = match self.attrs.mode.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
-            Dispatch::Static => {
-                // TODO: consider making "dyn" the default, switch to static when first impl seen
-                // Pros: no annoying error on first write
-                // Cons: goes against "make perf cost explicit"
-                let impls = self.resolve_static_impls().ok_or(
-                    amyhow!(self.name => "At least one impl or `dyn` is required for interface dispatch"),
-                )?;
-
-                static_dispatch(impls, self.dispatchable_methods)?
-            }
-        };
-
-        let final_methods = self.final_methods;
+            Dispatch::Direct => direct::dispatch(self),
+        }?;
 
         let content = quote! {
             #object
@@ -394,9 +373,7 @@ impl InterfaceShape {
             // TODO: tag parsing with exhaustive hints
             // TODO: make this a trait `Tag` ?
             impl Tag {
-                pub(crate) const fn define(repr: &'static str) -> Self {
-                    Self(repr)
-                }
+                pub(crate) const fn define(repr: &'static str) -> Self { Self(repr) }
             }
 
             pub struct Descriptor;
@@ -414,90 +391,6 @@ impl InterfaceShape {
 
         Ok(content)
     }
-}
-
-struct DispatchCode {
-    all_tags: TokenStream,
-    object: TokenStream,
-    dispatched_methods: Vec<TokenStream>,
-    other_codegen: Option<TokenStream>,
-}
-
-fn provide_call_context(kind: &MethodKind, impl_: &ImplRef) -> Result<TokenStream> {
-    let ImplRef { path, variant } = impl_;
-    let content = match kind {
-        MethodKind::Stateful => quote! { Self::#variant(obj) => obj. },
-        MethodKind::Associated => {
-            let tag = impl_.tag();
-            quote! { #tag => #path:: }
-        }
-    };
-
-    Ok(content)
-}
-
-fn static_dispatch_method(impls: &Vec<ImplRef>, method: Method) -> Result<TokenStream> {
-    let kind = method.kind();
-    let call_via_ctx = method.call_via_context()?;
-    let mut sig = method.signature;
-
-    let determinant = match kind {
-        MethodKind::Stateful => quote! { self },
-        MethodKind::Associated => {
-            sig.inputs.insert(0, parse_quote!(tag: Tag));
-            quote! { tag }
-        }
-    };
-
-    let branches: Vec<TokenStream> = impls
-        .iter()
-        .map(|impl_| {
-            let ctx = provide_call_context(&kind, impl_)?;
-            Ok(quote! { #ctx #call_via_ctx })
-        })
-        .collect::<Result<_>>()?;
-
-    let content = quote! { pub #sig {
-        match #determinant {
-            #(#branches,)*
-
-            // Completely omitting this branch requires Tag::define to be unsafe
-            // TODO: measure perf
-            // TODO: we can already omit this branch for stateful methods of static interfaces
-            // TODO: for static traits, we can have tag_repr(enum), which the compiler can prove to be total
-            _ => unreachable!("Caught an invalid tag. Most likely, an erroneous ::define exists somewhere."),
-        }
-    }};
-
-    Ok(content)
-}
-
-fn static_dispatch(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<DispatchCode> {
-    let paths: Vec<_> = impls.iter().map(|x| &x.path).collect();
-    let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
-
-    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
-
-    let object = quote! {
-        pub enum Object { #(
-            #variants(#paths)
-        )*}
-    };
-
-    // Product: (Methods x Impls)
-    let dispatched_methods = methods
-        .into_iter()
-        .map(|m| static_dispatch_method(&impls, m))
-        .collect::<Result<_>>()?;
-
-    let all_tags = quote! { &[#(#tags)*] };
-
-    Ok(DispatchCode {
-        all_tags,
-        object,
-        dispatched_methods,
-        other_codegen: None,
-    })
 }
 
 pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Result<TokenStream> {
@@ -564,6 +457,7 @@ impl Impl {
         inherent.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
         inherent.attrs.push(parse_quote!(#[doc(hidden)]));
         inherent.sig.ident = format_ident!("__const_{}", &func.sig.ident);
+        inherent.sig.constness = parse_quote!(const);
 
         self.inherents.push(inherent.to_token_stream());
     }
@@ -577,8 +471,6 @@ impl Impl {
             let call_inherent = method.call_via_self()?;
             func.block = parse_quote!({ #call_inherent });
         };
-
-        func.sig.constness = None;
 
         Ok(())
     }
@@ -652,7 +544,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
 
     let tag_type = quote! { <#interface::Descriptor as ::plug::InterfaceDescriptor>::Tag };
 
-    // TODO: tag overrides ()
+    // TODO: tag overrides
     let tag = quote! {
         impl ::plug::Tagged<#interface::Descriptor> for #object {
             const TAG: #tag_type = #tag_type::define(#object::inherent_tag());
@@ -670,9 +562,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
 
     let codegen = impl_.codegen()?;
     let content = quote! {
-        #input
-        #tag
-        #codegen
+        #input #tag #codegen
     };
     Ok(content)
 }
