@@ -371,7 +371,6 @@ impl InterfaceShape {
             pub struct Tag(&'static str);
 
             // TODO: tag parsing with exhaustive hints
-            // TODO: make this a trait `Tag` ?
             impl Tag {
                 pub(crate) const fn define(repr: &'static str) -> Self { Self(repr) }
             }

@@ -153,7 +153,6 @@ pub fn import<Aux: ToTokens>(
     import_advance(chain)
 }
 
-// TODO: import once as a common special case
 macro_rules! with_import {
     (#simple $source:ident => $fn:ident($aux:ident)) => {
         $crate::meta_passing::with_import!([$source] => |$aux, imported_raw| {

@@ -25,7 +25,7 @@ pub trait Object {
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
 #[allow(async_fn_in_trait)]
 pub trait Init: Object + Sized {
-    // TODO: async init via AsyncMethod
+    // TODO: optimize async init via AsyncMethod
     async fn init(config: &Self::Config) -> Result<Self>;
 }
 

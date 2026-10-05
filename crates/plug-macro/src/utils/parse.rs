@@ -12,6 +12,8 @@ use syn::{
 
 use crate::bail;
 
+// TODO: newtype-less parsing via macro_rules
+
 // Many
 
 // TODO: nicer signature for custom collections (GAT)

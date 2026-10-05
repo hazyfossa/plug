@@ -41,14 +41,9 @@ where
     }
 }
 
-// TODO: do we even need to restrict by feature here? We only tag `dyn`
-// as optional to save on codegen deps
-
-#[cfg(feature = "dyn")]
 pub type DynAsyncMethod<T, const LIKELY_SYNC: bool = false> =
     AsyncMethod<Pin<Box<dyn Future<Output = T>>>, LIKELY_SYNC>;
 
-#[cfg(feature = "dyn")]
 impl<F: Future + 'static, const LIKELY_SYNC: bool> AsyncMethod<F, LIKELY_SYNC>
 where
     F::Output: Unpin,

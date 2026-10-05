@@ -32,7 +32,7 @@ impl StateMatcher {
 }
 
 pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
-    let tag: Option<Literal> = syn::parse2(attrs)?; // TODO
+    let tag: Option<Literal> = syn::parse2(attrs)?; // TODO-ref: non-string inherent tags
 
     let tag = tag
         .map(|x| x.to_token_stream())

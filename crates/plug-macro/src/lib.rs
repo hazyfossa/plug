@@ -1,13 +1,14 @@
 // TODOs:
-// [ ] remove dep on syn_derive, replace with type-less impl (fixes `.inner` noise)
+// [X] remove dep on syn_derive
 // [ ] hide __meta! better (consider submodule)
-// [ ] allow #[plug(const)] as alternative to `const fn`
+// [X] allow #[plug(const)] as alternative to `const fn`
 // [ ] support passing attrs (requires change of ret convention)
-// [ ] Tag <-> String for enums
 // [ ] consider moving `impl` into separate crate for ergonomics (rust analyzer excludes)
 // [ ] loading interfaces from config
 // [ ] storage model (blocked on paradigm)
 // [ ] (try to) rewrite attr parsing
+// [ ] Impl Interface trait for InterfacedObjects
+// [ ] tag runtime parsing
 // [ ] dyn path
 
 use proc_macro2::TokenStream;
@@ -32,6 +33,7 @@ enum Code {
 
 impl Parse for Code {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        // Skip attributes
         let tmp = input.fork();
         let _ = tmp.call(Attribute::parse_outer)?;
         let target = tmp.lookahead1();
