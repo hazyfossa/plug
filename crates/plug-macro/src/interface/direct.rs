@@ -50,7 +50,7 @@ fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> Result<TokenStream
 
     let branches: Vec<TokenStream> = impls
         .iter()
-        .map(|impl_| branch(&method, impl_))
+        .map(|impl_| branch(method, impl_))
         .collect::<Result<_>>()?;
 
     let sig = &method.object_signature;
@@ -62,7 +62,8 @@ fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> Result<TokenStream
             // TODO: measure perf
             // TODO: we can already omit this branch for stateful methods of static interfaces
             // TODO: for static traits, we can have tag_repr(enum), which the compiler can prove to be total
-            _ => unreachable!("Caught an invalid tag. Most likely, an erroneous ::define exists somewhere."),
+            // TODO: this may cause errors with const-dispatch
+            _ => panic!("Caught an invalid tag. Most likely, an erroneous ::define exists somewhere."),
         }
     }};
 

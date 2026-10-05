@@ -33,7 +33,9 @@ where
             }
             // SAFETY: `fut` is pinned as `self` is (structual projection)
             Self::Deferred(fut) => {
-                LIKELY_SYNC.then_some(core::hint::cold_path());
+                if LIKELY_SYNC {
+                    core::hint::cold_path()
+                }
                 unsafe { Pin::new_unchecked(fut) }.poll(cx)
             }
             Self::Finished => panic!("future polled after completion"),

@@ -519,7 +519,7 @@ fn interface_from_impl(input: &ItemImpl) -> Option<Path> {
     let last_ident = path.segments.pop()?.ident;
     let _ = path.segments.pop_punct()?;
 
-    if last_ident.to_string() != "Interface" {
+    if last_ident != "Interface" {
         return None;
     };
 
@@ -553,9 +553,8 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
     let mut impl_ = Impl::new(interface, object);
 
     for item in &mut input.items {
-        match item {
-            ImplItem::Fn(func) => impl_.register_method(func)?,
-            _ => (),
+        if let ImplItem::Fn(func) = item {
+            impl_.register_method(func)?
         }
     }
 
