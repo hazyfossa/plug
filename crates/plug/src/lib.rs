@@ -2,7 +2,8 @@ use eyre::Result;
 use facet::Facet;
 pub use plug_macro::plug;
 
-mod future;
+pub mod future;
+pub mod remote;
 
 // TODO: replace Box<dyn T> and eyre::Error
 // with Stored Objects (blocked on paradigm)

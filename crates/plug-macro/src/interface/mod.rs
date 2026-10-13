@@ -155,7 +155,8 @@ impl Method {
         let attrs: MethodAttrs = parse_attrs(attrs)?;
 
         let is_const = sig.constness.is_some() || attrs.is_const;
-        let is_async = sig.asyncness.is_some(); // TODO: support `impl Future` syntax
+        // TODO: support `impl Future` syntax
+        let is_async = sig.asyncness.is_some();
 
         if is_async && is_const {
             bail!(sig.asyncness.unwrap() => "constant async methods are impossible")
@@ -215,6 +216,10 @@ impl Method {
         })
     }
 
+    fn requires_dispatch(&self) -> bool {
+        !self.is_final
+    }
+
     fn call_name(&self) -> Ident {
         let ident = &self.object_signature.ident;
 
@@ -257,7 +262,7 @@ struct InterfaceShape {
     name: Ident,
     attrs: InterfaceAttrs,
 
-    dispatchable_methods: Vec<Method>,
+    methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
     // TODO: assoc const, types
 }
@@ -267,7 +272,7 @@ impl InterfaceShape {
         Self {
             name,
             attrs,
-            dispatchable_methods: Vec::new(),
+            methods: Vec::new(),
             final_methods: Vec::new(),
         }
     }
@@ -283,7 +288,10 @@ impl InterfaceShape {
 
         for item in input.items.iter_mut() {
             match item {
-                TraitItem::Fn(f) => mask.push(this.register_method(f)?),
+                TraitItem::Fn(f) => {
+                    let method = this.register_method(f)?;
+                    mask.push(method.requires_dispatch())
+                }
                 TraitItem::Const(x) => bail!(x => "Constant property support is TBD"),
                 TraitItem::Type(x) => bail!(x => "Associated type support is TBD"),
                 TraitItem::Macro(x) => bail!(x => "Cannot define part of an interface via macros"),
@@ -301,14 +309,9 @@ impl InterfaceShape {
         self.attrs.mode.dispatch_kind()
     }
 
-    // Returns whether the method is implementable
-    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<bool> {
+    fn register_method(&mut self, input: &mut TraitItemFn) -> Result<&Method> {
         let sig = &mut input.sig;
         let method = Method::parse(&mut input.attrs, sig)?;
-
-        if method.is_final {
-            return Ok(false);
-        }
 
         if matches!(method.fn_kind, FnKind::Const) && !self.get_dispatch_kind().supports_const() {
             bail!(
@@ -317,16 +320,22 @@ impl InterfaceShape {
             );
         }
 
-        self.dispatchable_methods.push(method);
+        let ret = self.methods.push_mut(method);
 
-        Ok(true)
+        Ok(ret)
+    }
+
+    fn dispatchable_methods(&self) -> impl Iterator<Item = &Method> {
+        self.methods
+            .iter()
+            .filter(|method| method.requires_dispatch())
     }
 
     fn export_meta(&self) -> Result<TokenStream> {
         let mut variable_async_methods = HashSet::new();
         let mut const_methods = HashSet::new();
 
-        for method in &self.dispatchable_methods {
+        for method in &self.methods {
             let ident = &method.object_signature.ident;
             match method.fn_kind {
                 FnKind::Const => {

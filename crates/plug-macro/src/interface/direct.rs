@@ -86,6 +86,7 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
     // Product: (Methods x Impls)
     let dispatched_methods = methods
         .iter()
+        .filter(|m| m.requires_dispatch())
         .map(|m| dispatch_one_method(&impls, m))
         .collect::<Result<_>>()?;
 
@@ -130,5 +131,5 @@ pub fn dispatch(shape: InterfaceShape) -> Result<DispatchCode> {
         amyhow!(shape.name => "At least one impl or `dyn` is required for interface dispatch"),
     )?;
 
-    dispatch_all_methods(impls, shape.dispatchable_methods)
+    dispatch_all_methods(impls, shape.methods)
 }
