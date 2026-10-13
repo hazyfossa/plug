@@ -3,16 +3,16 @@
 // [ ] hide __meta! better (consider submodule)
 // [X] allow #[plug(const)] as alternative to `const fn`
 // [ ] support passing attrs (requires change of ret convention)
-// [ ] consider moving `impl` into separate crate for ergonomics (rust analyzer excludes)
 // [ ] loading interfaces from config
 // [ ] storage model (blocked on paradigm)
 // [ ] (try to) rewrite attr parsing
 // [ ] Impl Interface trait for InterfacedObjects
 // [ ] tag runtime parsing
 // [ ] dyn path
+// [ ] resolve `cfg` attrs
 
 use proc_macro2::TokenStream;
-use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, parse::Parse};
+use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, Visibility, parse::Parse};
 
 mod interface;
 mod object;
@@ -36,6 +36,7 @@ impl Parse for Code {
         // Skip attributes
         let tmp = input.fork();
         let _ = tmp.call(Attribute::parse_outer)?;
+        let _ = tmp.parse::<Visibility>();
         let target = tmp.lookahead1();
 
         if target.peek(Token![trait]) {

@@ -17,7 +17,7 @@ pub fn export<T: ToTokens>(marker: Ident, input: T) -> Result<TokenStream> {
         #[doc(hidden)]
         macro_rules! #marker {
             ([$($other_imports:tt)*] $($data:tt)*) => {
-                ::plug_macro::__import_advance!([[#input], $($other_imports)*] $($data)* );
+                ::plug::__codegen::plug_macro::__import_advance!([[#input], $($other_imports)*] $($data)* );
             };
         }
 

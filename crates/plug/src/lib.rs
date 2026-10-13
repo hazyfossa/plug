@@ -33,9 +33,18 @@ pub trait Tagged<I: InterfaceDescriptor> {
     const TAG: I::Tag;
 }
 
-#[cfg(feature = "dyn")]
 #[doc(hidden)]
-pub mod __dyn_codegen {
+pub mod __codegen {
+    #[cfg(feature = "dyn")]
+    pub use super::dyn_codegen::*;
+
+    pub use eyre; // TODO: better error handling
+    pub use facet;
+    pub use plug_macro;
+}
+
+#[cfg(feature = "dyn")]
+mod dyn_codegen {
     use super::*;
     use future::*;
 
