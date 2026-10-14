@@ -54,7 +54,7 @@ impl Parse for Code {
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x) => interface::trait_to_interface(syn::parse2(attrs)?, x),
-        Code::Impl(x) => interface::register_impl(syn::parse2(attrs)?, x),
+        Code::Impl(x) => interface::implement::register_impl(syn::parse2(attrs)?, x),
         Code::Struct(x) => object::struct_to_object(syn::parse2(attrs)?, x),
     }
 }
