@@ -12,6 +12,7 @@ pub mod remote;
 // individual objects
 
 pub trait InterfaceDescriptor {
+    // type Error;
     type Tag: PartialEq + 'static;
     const ALL: &[Self::Tag];
 }

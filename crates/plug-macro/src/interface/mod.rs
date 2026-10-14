@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Deref};
 
 use darling::FromAttributes;
 use proc_macro2::TokenStream;
@@ -138,7 +138,7 @@ struct MethodAttrs {
 }
 
 struct Method {
-    object_signature: syn::Signature,
+    sig: syn::Signature,
     args: Vec<Ident>,
 
     kind: MethodKind,
@@ -208,7 +208,7 @@ impl Method {
         //
 
         Ok(Self {
-            object_signature,
+            sig: object_signature,
             args,
             kind,
             fn_kind,
@@ -221,7 +221,7 @@ impl Method {
     }
 
     fn call_name(&self) -> Ident {
-        let ident = &self.object_signature.ident;
+        let ident = &self.sig.ident;
 
         match self.fn_kind {
             FnKind::Const => format_ident!("__const_{ident}"),
@@ -229,7 +229,7 @@ impl Method {
         }
     }
 
-    fn call(&self, target: Path) -> Result<TokenStream> {
+    fn call(&self, target: Path) -> TokenStream {
         let name = self.call_name();
         let args = &self.args;
 
@@ -244,11 +244,10 @@ impl Method {
             _direct_call => quote! { #name( #(#args)* ) },
         };
 
-        let content = quote! { #target #access #call_body };
-        Ok(content)
+        quote! { #target #access #call_body }
     }
 
-    fn call_via_self(&self) -> Result<TokenStream> {
+    fn call_via_self(&self) -> TokenStream {
         let target = match self.kind {
             MethodKind::Associated => parse_quote!(Self),
             MethodKind::Stateful => parse_quote!(self),
@@ -325,18 +324,12 @@ impl InterfaceShape {
         Ok(ret)
     }
 
-    fn dispatchable_methods(&self) -> impl Iterator<Item = &Method> {
-        self.methods
-            .iter()
-            .filter(|method| method.requires_dispatch())
-    }
-
     fn export_meta(&self) -> Result<TokenStream> {
         let mut variable_async_methods = HashSet::new();
         let mut const_methods = HashSet::new();
 
         for method in &self.methods {
-            let ident = &method.object_signature.ident;
+            let ident = &method.sig.ident;
             match method.fn_kind {
                 FnKind::Const => {
                     const_methods.insert(ident.clone());
@@ -477,7 +470,7 @@ impl Impl {
         if matches!(method.fn_kind, FnKind::Const) {
             self.copy_to_inherent(func);
 
-            let call_inherent = method.call_via_self()?;
+            let call_inherent = method.call_via_self();
             func.block = parse_quote!({ #call_inherent });
         };
 

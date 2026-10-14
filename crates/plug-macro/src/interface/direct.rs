@@ -24,36 +24,33 @@ impl ImplRef {
     }
 }
 
-fn branch(method: &Method, impl_: &ImplRef) -> Result<TokenStream> {
+fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
     let ImplRef { path, variant } = impl_;
 
     let content = match method.kind {
         MethodKind::Stateful => {
-            let call = method.call(parse_quote!(obj))?;
+            let call = method.call(parse_quote!(obj));
             quote! { Self::#variant(obj) => #call }
         }
         MethodKind::Associated => {
             let tag = impl_.tag();
-            let call = method.call(path.clone())?;
+            let call = method.call(path.clone());
             quote! { #tag => #call }
         }
     };
 
-    Ok(content)
+    content
 }
 
-fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> Result<TokenStream> {
+fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> TokenStream {
     let determinant = match &method.kind {
         MethodKind::Stateful => quote! { self },
         MethodKind::Associated => quote! { tag },
     };
 
-    let branches: Vec<TokenStream> = impls
-        .iter()
-        .map(|impl_| branch(method, impl_))
-        .collect::<Result<_>>()?;
+    let branches = impls.iter().map(|impl_| branch(method, impl_));
 
-    let sig = &method.object_signature;
+    let sig = &method.sig;
     let content = quote! { pub #sig {
         match #determinant {
             #(#branches,)*
@@ -67,7 +64,7 @@ fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> Result<TokenStream
         }
     }};
 
-    Ok(content)
+    content
 }
 
 fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<DispatchCode> {
@@ -88,7 +85,7 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
         .iter()
         .filter(|m| m.requires_dispatch())
         .map(|m| dispatch_one_method(&impls, m))
-        .collect::<Result<_>>()?;
+        .collect();
 
     let all_tags = quote! { &[#(#tags,)*] };
 

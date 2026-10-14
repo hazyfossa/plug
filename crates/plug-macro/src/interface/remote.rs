@@ -1,35 +1,160 @@
+use std::marker::PhantomData;
+
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::Result;
+use syn::{Result, parse_quote};
 
-use crate::interface::InterfaceShape;
+use crate::interface::{InterfaceShape, Method};
+
+struct Code<T> {
+    body: Vec<TokenStream>,
+    _rules: PhantomData<T>,
+}
+
+trait Codegen {
+    fn handle_method(method: &Method) -> TokenStream;
+    fn codegen(body: Vec<TokenStream>) -> TokenStream;
+}
+
+impl<T: Codegen> Code<T> {
+    fn new() -> Self {
+        Self {
+            body: Vec::new(),
+            _rules: PhantomData,
+        }
+    }
+
+    fn register_method(&mut self, method: &Method) {
+        self.body.push(T::handle_method(method));
+    }
+
+    fn with_methods(methods: &[Method]) -> TokenStream {
+        let mut this = Self::new();
+
+        for method in methods {
+            this.register_method(method);
+        }
+
+        T::codegen(this.body)
+    }
+}
+
+struct RequestBuilder;
+
+impl Codegen for RequestBuilder {
+    fn handle_method(method: &Method) -> TokenStream {
+        let name = &method.sig.ident;
+        let inputs = &method.sig.inputs; // TODO: no `self` here
+
+        quote! { #name { #inputs } }
+    }
+
+    fn codegen(body: Vec<TokenStream>) -> TokenStream {
+        quote! { pub enum Request { #(#body),* } }
+    }
+}
+
+// TODO: when we (inevitably) reach for our own wire format
+// consider making responses *untagged* unions, as it should be possible
+// to prove safety of variant deref based on protocol state
+struct ResponseBuilder {
+    body: Vec<TokenStream>,
+}
+
+impl Codegen for ResponseBuilder {
+    fn handle_method(method: &Method) -> TokenStream {
+        let name = &method.sig.ident;
+        // TODO: consider Result as special case here
+        let output = &method.sig.output;
+
+        quote! { #name( #output ) }
+    }
+
+    fn codegen(body: Vec<TokenStream>) -> TokenStream {
+        quote! { pub enum Response { #(#body),* } }
+    }
+}
+
+struct ClientBuilder {
+    body: Vec<TokenStream>,
+}
+
+impl Codegen for ClientBuilder {
+    fn handle_method(method: &Method) -> TokenStream {
+        let name = &method.sig.ident;
+        let args = &method.args;
+
+        let mut client_sig = method.sig.clone();
+        client_sig.constness = None;
+        client_sig.asyncness = Some(parse_quote!(async));
+
+        quote! {
+            #client_sig {
+                // TODO: add context here that error comes from caller
+                let ret = self.raw().call(Request::#name { #(#args),* }).await?;
+                match ret {
+                    Response::#name(output) => Ok(output),
+                    other => todo!("Invalid variant error"),
+                }
+            }
+        }
+    }
+
+    fn codegen(body: Vec<TokenStream>) -> TokenStream {
+        quote! {
+            impl<C> Client<Descriptor, C>
+                where C: Caller<Descriptor>
+            { #(#body)* }
+        }
+    }
+}
+
+struct CallerBuilder {
+    body: Vec<TokenStream>,
+}
+
+impl Codegen for CallerBuilder {
+    fn handle_method(method: &Method) -> TokenStream {
+        let name = &method.sig.ident;
+        let args = &method.args;
+
+        let call = method.call_via_self();
+
+        quote! { Request::#name { #(#args),* } => {
+            let ret = #call;
+            Ok(Response::#name(ret))
+        } }
+    }
+
+    fn codegen(body: Vec<TokenStream>) -> TokenStream {
+        quote! {
+            impl Caller<Descriptor> for Object {
+                async fn call(&mut self, request: Request) -> Result<Response> {
+                    match request { #(#body)* }
+                }
+            }
+        }
+    }
+}
 
 impl InterfaceShape {
     pub fn remote_codegen(&self) -> Result<TokenStream> {
-        let mut request = Vec::new();
-        let mut response = Vec::new();
-
-        for method in &self.methods {
-            let sig = &method.object_signature;
-
-            let name = &sig.ident;
-            let inputs = &sig.inputs;
-            let output = &sig.output;
-
-            request.push(quote! { #name { #inputs } });
-            response.push(quote! { #name( #output ) });
-        }
+        let request = Code::<RequestBuilder>::with_methods(&self.methods);
+        let response = Code::<ResponseBuilder>::with_methods(&self.methods);
+        let client_impl = Code::<ClientBuilder>::with_methods(&self.methods);
+        let caller_impl = Code::<CallerBuilder>::with_methods(&self.methods);
 
         let content = quote! {
             mod remote {
                 use super::*;
-                pub enum Request { #(#request),* }
-                pub enum Response { #(#response),* }
-            }
+                use ::plug::remote::*;
 
-            impl ::plug::remote::RemoteDescriptor for Descriptor {
-                type Request = remote::Request;
-                type Response = remote::Response;
+                impl RemoteDescriptor for Descriptor {
+                    type Request = Request;
+                    type Response = Response;
+                }
+
+                #request #response #client_impl #caller_impl
             }
         };
 
