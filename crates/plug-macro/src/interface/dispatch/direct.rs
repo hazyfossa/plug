@@ -74,7 +74,6 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
     let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
 
     let object = quote! {
-        #[allow(non_camel_case_types)]
         pub enum Object { #(
             #variants(#paths),
         )*}
@@ -98,14 +97,18 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
 }
 
 fn resolve_impls(shape: &InterfaceShape) -> Option<Vec<ImplRef>> {
-    let paths = shape.attrs.paths.as_ref().filter(|p| !p.is_empty())?;
+    let paths = shape
+        .dispatch_target
+        .paths
+        .as_ref()
+        .filter(|p| !p.is_empty())?;
 
     let impls = paths
         .iter()
         .map(|path| {
             let variant = path.last_ident().unwrap().clone();
 
-            let path = match shape.attrs.mode {
+            let path = match shape.dispatch_target.mode {
                 Mode::FromMod => {
                     let marker = registered_module_object_marker(&shape.name);
                     path.join(marker)

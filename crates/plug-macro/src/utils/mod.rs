@@ -74,6 +74,10 @@ macro_rules! amyhow {
 pub(crate) use amyhow;
 
 macro_rules! bail {
+    (@immediately $($tt:tt)*) => {
+        return $crate::amyhow!($($tt)*).to_compile_error()
+    };
+
     ($($tt:tt)*) => {
         return Err($crate::amyhow!($($tt)*))
     };

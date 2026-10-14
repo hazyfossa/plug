@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Deref};
 
 use darling::FromAttributes;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
     Attribute, FnArg, Ident, ItemTrait, Pat, Path, Result, Signature, Token, TraitItem,
-    TraitItemFn,
+    TraitItemFn, Type,
     parse::{Parse, ParseStream},
     parse_quote,
     spanned::Spanned,
@@ -66,22 +66,29 @@ struct DispatchCode {
 
 //
 
-pub struct InterfaceAttrs {
+pub struct DispatchTarget {
     mode: Mode,
     paths: Option<Vec<Path>>,
-    // tag_repr: Type
+}
+
+impl Deref for DispatchTarget {
+    type Target = Mode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.mode
+    }
 }
 
 // TODO: derive this
-impl Parse for InterfaceAttrs {
+impl Parse for DispatchTarget {
     fn parse(input: ParseStream) -> Result<Self> {
         let mode_parse = input.lookahead1();
 
         let mode = if mode_parse.peek(Token![mod]) {
-            let _ = input.parse::<Token![mod]>()?;
+            input.parse::<Token![mod]>()?;
             Mode::FromMod
         } else if mode_parse.peek(Token![dyn]) {
-            let _ = input.parse::<Token![dyn]>()?;
+            input.parse::<Token![dyn]>()?;
             Mode::Dynamic
         } else {
             Mode::Direct
@@ -99,8 +106,17 @@ impl Parse for InterfaceAttrs {
 
         let paths = paths.map(|x| x.inner);
 
-        Ok(InterfaceAttrs { mode, paths })
+        Ok(DispatchTarget { mode, paths })
     }
+}
+
+#[derive(FromAttributes)]
+#[darling(attributes(plug))]
+struct InterfaceOptions {
+    #[darling(default, rename = "remote")]
+    is_remote: bool,
+
+    tag_repr: Option<Type>,
 }
 
 //
@@ -261,7 +277,8 @@ impl Method {
 
 struct InterfaceShape {
     name: Ident,
-    attrs: InterfaceAttrs,
+    options: InterfaceOptions,
+    dispatch_target: DispatchTarget,
 
     methods: Vec<Method>,
     final_methods: Vec<TraitItemFn>,
@@ -269,17 +286,20 @@ struct InterfaceShape {
 }
 
 impl InterfaceShape {
-    fn new(name: Ident, attrs: InterfaceAttrs) -> Self {
+    fn new(name: Ident, options: InterfaceOptions, dispatch_target: DispatchTarget) -> Self {
         Self {
             name,
-            attrs,
+            options,
+            dispatch_target,
             methods: Vec::new(),
             final_methods: Vec::new(),
         }
     }
 
-    fn parse(input: &mut ItemTrait, attrs: InterfaceAttrs) -> Result<Self> {
-        let mut this = Self::new(input.ident.clone(), attrs);
+    fn parse(input: &mut ItemTrait, dispatch_target: DispatchTarget) -> Result<Self> {
+        let options = parse_attrs(&mut input.attrs)?;
+
+        let mut this = Self::new(input.ident.clone(), options, dispatch_target);
 
         input.vis = parse_quote!(pub);
         input.ident = format_ident!("Interface");
@@ -306,15 +326,13 @@ impl InterfaceShape {
         Ok(this)
     }
 
-    fn get_dispatch_kind(&self) -> Dispatch {
-        self.attrs.mode.dispatch_kind()
-    }
-
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<&Method> {
         let sig = &mut input.sig;
         let method = Method::parse(&mut input.attrs, sig)?;
 
-        if matches!(method.fn_kind, FnKind::Const) && !self.get_dispatch_kind().supports_const() {
+        if matches!(method.fn_kind, FnKind::Const)
+            && !self.dispatch_target.dispatch_kind().supports_const()
+        {
             bail!(
                 sig.ident =>
                 "Const fn is not supported when using dynamic dispatch"
@@ -344,7 +362,7 @@ impl InterfaceShape {
         }
 
         let data = InterfaceMeta {
-            mode: self.attrs.mode.clone(),
+            mode: self.dispatch_target.mode.clone(),
             const_methods: const_methods.into(),
             variable_async_methods: variable_async_methods.into(),
         };
@@ -356,13 +374,14 @@ impl InterfaceShape {
 
     fn codegen(self) -> Result<TokenStream> {
         let final_methods = self.final_methods.clone(); // TODO
+        let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
 
         let DispatchCode {
             all_tags,
             object,
             other_codegen,
             dispatched_methods,
-        } = match self.attrs.mode.dispatch_kind() {
+        } = match self.dispatch_target.dispatch_kind() {
             Dispatch::Dynamic => todo!("dyn path"),
             Dispatch::Direct => dispatch::direct::dispatch(self),
         }?;
@@ -370,6 +389,7 @@ impl InterfaceShape {
         let content = quote! {
             #object
             #other_codegen
+            #maybe_remote
 
             // TODO: arbitrarily represented tags
             #[derive(PartialEq)]
@@ -397,7 +417,7 @@ impl InterfaceShape {
     }
 }
 
-pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Result<TokenStream> {
+pub fn trait_to_interface(attrs: DispatchTarget, mut trait_: ItemTrait) -> Result<TokenStream> {
     ensure_empty_tokens!(trait_.generics.params, "Generic interfaces are TBD");
     ensure_empty_tokens!(trait_.supertraits, "Nested interfaces are TBD");
 
@@ -411,7 +431,7 @@ pub fn trait_to_interface(attrs: InterfaceAttrs, mut trait_: ItemTrait) -> Resul
     let dispatched = shape.codegen()?;
 
     let content = quote! {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, non_camel_case_types)]
         #vis mod #name {
             use super::*;
 

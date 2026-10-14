@@ -2,9 +2,12 @@ use std::marker::PhantomData;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Result, parse_quote};
+use syn::{Result, ReturnType, parse_quote};
 
-use crate::interface::{InterfaceShape, Method};
+use crate::{
+    bail,
+    interface::{InterfaceShape, Method},
+};
 
 struct Code<T> {
     body: Vec<TokenStream>,
@@ -57,15 +60,20 @@ impl Codegen for RequestBuilder {
 // TODO: when we (inevitably) reach for our own wire format
 // consider making responses *untagged* unions, as it should be possible
 // to prove safety of variant deref based on protocol state
-struct ResponseBuilder {
-    body: Vec<TokenStream>,
-}
+struct ResponseBuilder;
 
 impl Codegen for ResponseBuilder {
     fn handle_method(method: &Method) -> TokenStream {
         let name = &method.sig.ident;
+
         // TODO: consider Result as special case here
-        let output = &method.sig.output;
+        let output = match &method.sig.output {
+            ReturnType::Type(_, x) => x,
+            ReturnType::Default => {
+                bail!(@immediately name => "Remote methods without a return value are TBD. 
+                Consider specifying `-> ()` in the meantime.")
+            }
+        };
 
         quote! { #name( #output ) }
     }
@@ -75,9 +83,7 @@ impl Codegen for ResponseBuilder {
     }
 }
 
-struct ClientBuilder {
-    body: Vec<TokenStream>,
-}
+struct ClientBuilder;
 
 impl Codegen for ClientBuilder {
     fn handle_method(method: &Method) -> TokenStream {
@@ -88,8 +94,14 @@ impl Codegen for ClientBuilder {
         client_sig.constness = None;
         client_sig.asyncness = Some(parse_quote!(async));
 
+        // TODO: looks.. not great
+        let previous_ret = match &method.sig.output {
+            ReturnType::Type(_, x) => x,
+            _ => unreachable!(), // guarded by ResponseBuilder
+        };
+
         quote! {
-            #client_sig {
+            pub async fn #name(&mut self, #(#args)*) -> eyre::Result<#previous_ret> {
                 // TODO: add context here that error comes from caller
                 let ret = self.raw().call(Request::#name { #(#args),* }).await?;
                 match ret {
@@ -109,9 +121,7 @@ impl Codegen for ClientBuilder {
     }
 }
 
-struct CallerBuilder {
-    body: Vec<TokenStream>,
-}
+struct CallerBuilder;
 
 impl Codegen for CallerBuilder {
     fn handle_method(method: &Method) -> TokenStream {
@@ -129,7 +139,7 @@ impl Codegen for CallerBuilder {
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
         quote! {
             impl Caller<Descriptor> for Object {
-                async fn call(&mut self, request: Request) -> Result<Response> {
+                async fn call(&mut self, request: Request) -> eyre::Result<Response> {
                     match request { #(#body)* }
                 }
             }
