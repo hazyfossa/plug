@@ -1,8 +1,8 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    ImplItem, ImplItemFn, ItemImpl, Path, Result, Signature, Type, parse::Nothing, parse_quote,
-    spanned::Spanned,
+    Ident, ImplItem, ImplItemFn, ItemImpl, Path, Result, Signature, Type, parse::Nothing,
+    parse_quote, spanned::Spanned,
 };
 
 use crate::{
@@ -11,6 +11,10 @@ use crate::{
     meta_passing::with_import,
     parse::{Many, PathExt, parse},
 };
+
+pub fn const_redirect(name: &Ident) -> Ident {
+    format_ident!("__const_{}", name)
+}
 
 struct Impl {
     interface: Path,
@@ -31,24 +35,27 @@ impl Impl {
 
     // fn parse(input: &mut ImplItem) -> Result<Self> {}
 
-    fn copy_to_inherent(&mut self, func: &ImplItemFn) {
+    fn copy_to_inherent(&mut self, func: &ImplItemFn) -> Ident {
+        let inherent_ident = const_redirect(&func.sig.ident);
+
         let mut inherent = func.clone();
 
         inherent.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
         inherent.attrs.push(parse_quote!(#[doc(hidden)]));
-        inherent.sig.ident = format_ident!("__const_{}", &func.sig.ident);
+        inherent.sig.ident = inherent_ident.clone();
         inherent.sig.constness = parse_quote!(const);
 
         self.inherents.push(inherent.to_token_stream());
+        inherent_ident
     }
 
     fn register_method(&mut self, func: &mut ImplItemFn) -> Result<()> {
         let method = Method::parse(&mut func.attrs, &mut func.sig)?;
 
         if matches!(method.fn_kind, FnKind::Const) {
-            self.copy_to_inherent(func);
+            let redirect = self.copy_to_inherent(func);
 
-            let call_inherent = method.call_via_self();
+            let call_inherent = method.call_via_self_with(Some(redirect));
             func.block = parse_quote!({ #call_inherent });
         };
 

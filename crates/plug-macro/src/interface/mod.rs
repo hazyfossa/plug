@@ -236,19 +236,8 @@ impl Method {
         !self.is_final
     }
 
-    fn call_name(&self) -> Ident {
-        let ident = &self.sig.ident;
-
-        // TODO: this breaks remote const methods
-        match self.fn_kind {
-            FnKind::Const => format_ident!("__const_{ident}"),
-            _ => ident.clone(),
-        }
-    }
-
-    // TODO: simplify
-    fn call(&self, target: Path) -> TokenStream {
-        let name = self.call_name();
+    fn call_with(&self, target: Path, redirect: Option<Ident>) -> TokenStream {
+        let name = redirect.as_ref().unwrap_or(&self.sig.ident);
         let args = &self.args;
 
         let access = match self.kind {
@@ -265,13 +254,21 @@ impl Method {
         quote! { #target #access #call_body }
     }
 
-    fn call_via_self(&self) -> TokenStream {
+    fn call(&self, target: Path) -> TokenStream {
+        self.call_with(target, None)
+    }
+
+    fn call_via_self_with(&self, redirect: Option<Ident>) -> TokenStream {
         let target = match self.kind {
             MethodKind::Associated => parse_quote!(Self),
             MethodKind::Stateful => parse_quote!(self),
         };
 
-        self.call(target)
+        self.call_with(target, redirect)
+    }
+
+    fn call_via_self(&self) -> TokenStream {
+        self.call_via_self_with(None)
     }
 }
 

@@ -5,7 +5,8 @@ use syn::{Ident, Path, Result, parse_quote};
 use crate::{
     amyhow,
     interface::{
-        DispatchCode, InterfaceShape, Method, MethodKind, Mode, registered_module_object_marker,
+        DispatchCode, FnKind, InterfaceShape, Method, MethodKind, Mode, implement::const_redirect,
+        registered_module_object_marker,
     },
     parse::PathExt,
 };
@@ -27,14 +28,19 @@ impl ImplRef {
 fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
     let ImplRef { path, variant } = impl_;
 
+    let redirect = match method.fn_kind {
+        FnKind::Const => Some(const_redirect(&method.sig.ident)),
+        _ => None,
+    };
+
     let content = match method.kind {
         MethodKind::Stateful => {
-            let call = method.call(parse_quote!(obj));
+            let call = method.call_with(parse_quote!(obj), redirect);
             quote! { Self::#variant(obj) => #call }
         }
         MethodKind::Associated => {
             let tag = impl_.tag();
-            let call = method.call(path.clone());
+            let call = method.call_with(path.clone(), redirect);
             quote! { #tag => #call }
         }
     };
