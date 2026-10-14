@@ -1,7 +1,7 @@
 use plug::plug;
 
 #[plug(implement::TestImpl)]
-// #[plug(remote)]
+#[plug(remote)]
 trait Test {
     fn associated() -> String;
     async fn foo(&self) -> bool;

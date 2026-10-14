@@ -6,7 +6,7 @@ use syn::{Result, ReturnType, parse_quote};
 
 use crate::{
     bail,
-    interface::{InterfaceShape, Method},
+    interface::{CallTarget, InterfaceShape, Method},
 };
 
 struct Code<T> {
@@ -47,7 +47,7 @@ struct RequestBuilder;
 impl Codegen for RequestBuilder {
     fn handle_method(method: &Method) -> TokenStream {
         let name = &method.sig.ident;
-        let inputs = &method.sig.inputs; // TODO: no `self` here
+        let inputs = method.input_shape(CallTarget::Interface);
 
         quote! { #name { #inputs } }
     }
@@ -88,7 +88,9 @@ struct ClientBuilder;
 impl Codegen for ClientBuilder {
     fn handle_method(method: &Method) -> TokenStream {
         let name = &method.sig.ident;
-        let args = &method.args;
+
+        let args = &method.args(CallTarget::Interface);
+        let inputs = method.input_shape(CallTarget::Interface);
 
         let mut client_sig = method.sig.clone();
         client_sig.constness = None;
@@ -101,9 +103,9 @@ impl Codegen for ClientBuilder {
         };
 
         quote! {
-            pub async fn #name(&mut self, #(#args)*) -> eyre::Result<#previous_ret> {
+            pub async fn #name(&mut self, #inputs) -> eyre::Result<#previous_ret> {
                 // TODO: add context here that error comes from caller
-                let ret = self.raw().call(Request::#name { #(#args),* }).await?;
+                let ret = self.raw().call(Request::#name { #args }).await?;
                 match ret {
                     Response::#name(output) => Ok(output),
                     other => todo!("Invalid variant error"),
@@ -114,9 +116,16 @@ impl Codegen for ClientBuilder {
 
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
         quote! {
-            impl<C> Client<Descriptor, C>
+            impl<C> Client<C>
                 where C: Caller<Descriptor>
-            { #(#body)* }
+            {
+                #[inline(always)]
+                pub fn raw(&mut self) -> &mut C {
+                    &mut self.0
+                }
+
+                #(#body)*
+            }
         }
     }
 }
@@ -126,11 +135,11 @@ struct CallerBuilder;
 impl Codegen for CallerBuilder {
     fn handle_method(method: &Method) -> TokenStream {
         let name = &method.sig.ident;
-        let args = &method.args;
+        let args = method.args(CallTarget::Interface);
 
-        let call = method.call_via_self();
+        let call = method.call_via_self(CallTarget::Interface);
 
-        quote! { Request::#name { #(#args),* } => {
+        quote! { Request::#name { #args } => {
             let ret = #call;
             Ok(Response::#name(ret))
         } }
@@ -159,9 +168,12 @@ impl InterfaceShape {
                 use super::*;
                 use ::plug::remote::*;
 
+                pub struct Client<C>(C);
+
                 impl RemoteDescriptor for Descriptor {
                     type Request = Request;
                     type Response = Response;
+                    type Client<C: Caller<Descriptor>> = Client<C>;
                 }
 
                 #request #response #client_impl #caller_impl

@@ -13,6 +13,7 @@ use syn::{
 
 use crate::{
     bail, ensure_empty_tokens,
+    interface::implement::const_redirect,
     meta_passing::export,
     parse::{Many, parse, parse_attrs},
     retain_by_mask,
@@ -153,8 +154,16 @@ struct MethodAttrs {
     is_sync_path: bool,
 }
 
+// Todo: consider splitting into ImplMethod and InterfaceMethod
+enum CallTarget {
+    Impl,
+    Interface,
+}
+
 struct Method {
+    // signature is CallTarget::Interface
     sig: syn::Signature,
+
     args: Vec<Ident>,
 
     kind: MethodKind,
@@ -236,39 +245,58 @@ impl Method {
         !self.is_final
     }
 
-    fn call_with(&self, target: Path, redirect: Option<Ident>) -> TokenStream {
-        let name = redirect.as_ref().unwrap_or(&self.sig.ident);
+    fn requires_tag(&self, target: &CallTarget) -> bool {
+        matches!(target, CallTarget::Interface) && matches!(&self.kind, MethodKind::Associated)
+    }
+
+    fn input_shape(&self, target: CallTarget) -> TokenStream {
+        let shape = &self
+            .sig
+            .inputs
+            .iter()
+            .filter(|x| !matches!(x, FnArg::Receiver(_)))
+            .collect::<Vec<_>>();
+
+        quote! { #(#shape),* }
+    }
+
+    fn args(&self, target: CallTarget) -> TokenStream {
         let args = &self.args;
+
+        let maybe_tag = self.requires_tag(&target).then_some(quote!(tag,));
+
+        quote! { #maybe_tag #(#args),* }
+    }
+
+    fn call(&self, target: CallTarget, target_path: &Path) -> TokenStream {
+        let name = if matches!(&self.fn_kind, FnKind::Const)
+            && matches!(&target, CallTarget::Impl { .. })
+        {
+            const_redirect(&self.sig.ident)
+        } else {
+            self.sig.ident.clone()
+        };
+
+        let args = self.args(target);
 
         let access = match self.kind {
             MethodKind::Associated => quote! { :: },
             MethodKind::Stateful => quote! { . },
         };
 
-        let call_body = match &self.fn_kind {
-            FnKind::Async { sync_path: true } => todo!("sync path optimization"),
-            FnKind::Async { sync_path: false } => quote! { #name( #(#args)* ).await },
-            _direct_call => quote! { #name( #(#args)* ) },
-        };
+        let maybe_await =
+            matches!(&self.fn_kind, FnKind::Async { .. }).then_some(quote! { .await });
 
-        quote! { #target #access #call_body }
+        quote! { #target_path #access #name( #args ) #maybe_await }
     }
 
-    fn call(&self, target: Path) -> TokenStream {
-        self.call_with(target, None)
-    }
-
-    fn call_via_self_with(&self, redirect: Option<Ident>) -> TokenStream {
-        let target = match self.kind {
+    fn call_via_self(&self, target: CallTarget) -> TokenStream {
+        let target_path = match &self.kind {
             MethodKind::Associated => parse_quote!(Self),
             MethodKind::Stateful => parse_quote!(self),
         };
 
-        self.call_with(target, redirect)
-    }
-
-    fn call_via_self(&self) -> TokenStream {
-        self.call_via_self_with(None)
+        self.call(target, &target_path)
     }
 }
 

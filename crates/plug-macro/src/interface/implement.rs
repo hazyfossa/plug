@@ -7,7 +7,7 @@ use syn::{
 
 use crate::{
     bail,
-    interface::{FnKind, InterfaceMeta, Method, Mode, registered_module_object_marker},
+    interface::{CallTarget, FnKind, InterfaceMeta, Method, Mode, registered_module_object_marker},
     meta_passing::with_import,
     parse::{Many, PathExt, parse},
 };
@@ -35,27 +35,24 @@ impl Impl {
 
     // fn parse(input: &mut ImplItem) -> Result<Self> {}
 
-    fn copy_to_inherent(&mut self, func: &ImplItemFn) -> Ident {
-        let inherent_ident = const_redirect(&func.sig.ident);
-
+    fn copy_to_inherent(&mut self, func: &ImplItemFn) {
         let mut inherent = func.clone();
 
         inherent.vis = parse_quote!(pub(crate)); // TODO: consider the implications of this
         inherent.attrs.push(parse_quote!(#[doc(hidden)]));
-        inherent.sig.ident = inherent_ident.clone();
+        inherent.sig.ident = const_redirect(&func.sig.ident);
         inherent.sig.constness = parse_quote!(const);
 
         self.inherents.push(inherent.to_token_stream());
-        inherent_ident
     }
 
     fn register_method(&mut self, func: &mut ImplItemFn) -> Result<()> {
         let method = Method::parse(&mut func.attrs, &mut func.sig)?;
 
         if matches!(method.fn_kind, FnKind::Const) {
-            let redirect = self.copy_to_inherent(func);
+            self.copy_to_inherent(func);
 
-            let call_inherent = method.call_via_self_with(Some(redirect));
+            let call_inherent = method.call_via_self(CallTarget::Impl);
             func.block = parse_quote!({ #call_inherent });
         };
 
