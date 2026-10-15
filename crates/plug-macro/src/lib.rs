@@ -1,20 +1,12 @@
 // TODOs:
-// [X] remove dep on syn_derive
-// [ ] hide __meta! better (consider submodule)
-// [X] allow #[plug(const)] as alternative to `const fn`
-// [ ] support passing attrs (requires change of ret convention)
+// [ ] dyn path
 // [ ] loading interfaces from config
 // [ ] storage model (blocked on paradigm)
 // [ ] (try to) rewrite attr parsing
 // [ ] tag runtime parsing
-// [ ] dyn path
 // [ ] resolve `cfg` attrs
 // [ ] Implement Init for Object
 // [ ] Reuse codegen infra for dispatch
-//
-// [ ] Impl Interface trait for Object if no method is associated
-// (requires splitting method.sig the same way as args)
-//
 
 use proc_macro2::TokenStream;
 use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, Visibility, parse::Parse};

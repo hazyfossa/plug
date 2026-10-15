@@ -1,22 +1,25 @@
 use eyre::Result;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 pub use plug_macro::plug;
 
 pub mod future;
 pub mod remote;
 
+pub trait BorrowedData<'a>: Serialize + Deserialize<'a> + 'a {}
+impl<'a, T: 'a + Serialize + Deserialize<'a>> BorrowedData<'a> for T {}
+
+pub trait Data: for<'a> BorrowedData<'a> + 'static {}
+impl<T: for<'a> BorrowedData<'a> + 'static> Data for T {}
+
 pub trait InterfaceDescriptor {
     // type Error;
-    type Tag: PartialEq + 'static;
+    type Tag: BorrowedData<'static> + PartialEq;
     const ALL: &[Self::Tag];
 }
 
-pub trait Data: Serialize + DeserializeOwned {}
-impl<T: Serialize + DeserializeOwned> Data for T {}
-
 pub trait Object {
-    type Config: Data + Default;
+    type Config: Data;
 }
 
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)

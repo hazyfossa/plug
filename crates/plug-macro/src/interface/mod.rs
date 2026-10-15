@@ -6,7 +6,7 @@ use quote::{format_ident, quote};
 use syn::{Ident, ItemTrait, Result, TraitItem, TraitItemFn, Type, parse_quote, spanned::Spanned};
 
 use crate::{
-    bail, ensure_empty_tokens,
+    bail, derive_data, ensure_empty_tokens,
     meta_passing::export,
     parse::{Many, parse, parse_attrs},
     retain_by_mask,
@@ -39,6 +39,7 @@ struct InterfaceOptions {
     tag_repr: Option<Type>,
 }
 
+// TODO: Trimmed version (ShapeForDispatch)
 struct InterfaceShape {
     name: Ident,
     options: InterfaceOptions,
@@ -141,8 +142,9 @@ impl InterfaceShape {
             .clone()
             .unwrap_or(parse_quote! { &'static str });
 
-        let final_methods = self.final_methods.clone(); // TODO
+        let final_methods = self.final_methods.clone();
         let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
+        let derive_data = derive_data();
 
         let DispatchCode {
             all_tags,
@@ -156,6 +158,7 @@ impl InterfaceShape {
             #other_codegen
             #maybe_remote
 
+            #derive_data
             #[derive(PartialEq)]
             pub struct Tag(#tag_repr);
 
@@ -189,7 +192,7 @@ pub fn trait_to_interface(attrs: DispatchTarget, mut trait_: ItemTrait) -> Resul
 
     let shape = InterfaceShape::parse(&mut trait_, attrs)?;
 
-    let name = shape.name.clone(); // TODO
+    let name = shape.name.clone();
     let meta = shape.export_meta()?;
 
     let dispatched = shape.codegen()?;

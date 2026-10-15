@@ -62,7 +62,6 @@ impl Deref for DispatchTarget {
     }
 }
 
-// TODO: derive this
 impl Parse for DispatchTarget {
     fn parse(input: ParseStream) -> Result<Self> {
         let mode_parse = input.lookahead1();

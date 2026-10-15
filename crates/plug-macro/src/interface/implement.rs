@@ -27,7 +27,7 @@ struct Impl {
     interface: Path,
     object: Path,
     inherents: Vec<TokenStream>,
-    methods: Vec<ImplementedMethod>,
+    methods: Vec<Signature>,
 }
 
 impl Impl {
@@ -95,14 +95,7 @@ parse!(
     struct Context {
         object: Path,
         interface: Path,
-        impl_methods: Many<ImplementedMethod>,
-    }
-);
-
-// TODO: this only exists to provide spans, otherwise could be just `Method`
-parse!(
-    struct ImplementedMethod {
-        sig: Signature,
+        impl_methods: Many<Signature>,
     }
 );
 
@@ -118,7 +111,7 @@ fn interface_from_impl(input: &ItemImpl) -> Option<Path> {
     Some(path)
 }
 
-pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
+pub fn register_impl(tag: TokenStream, mut input: ItemImpl) -> Result<TokenStream> {
     let interface = match interface_from_impl(&input) {
         Some(x) => x,
         None => bail!(=> "This macro only makes sense for interface implementations"),
@@ -133,12 +126,15 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
         other => bail!(other => "Interfaces can only be implemented on objects"),
     };
 
+    let tag = (!tag.is_empty())
+        .then_some(tag)
+        .unwrap_or(quote! { #object::inherent_tag() });
+
     let tag_type = quote! { <#interface::Descriptor as ::plug::InterfaceDescriptor>::Tag };
 
-    // TODO: tag overrides
-    let tag = quote! {
+    let tagged_impl = quote! {
         impl ::plug::Tagged<#interface::Descriptor> for #object {
-            const TAG: #tag_type = #tag_type::define(#object::inherent_tag());
+            const TAG: #tag_type = #tag_type::define(#tag);
         }
     };
 
@@ -152,7 +148,7 @@ pub fn register_impl(_: Nothing, mut input: ItemImpl) -> Result<TokenStream> {
 
     let codegen = impl_.codegen()?;
     let content = quote! {
-        #input #tag #codegen
+        #input #tagged_impl #codegen
     };
     Ok(content)
 }
@@ -175,9 +171,7 @@ fn register_impl_inner(ctx: Context, meta: InterfaceMeta) -> Result<TokenStream>
         Mode::Dynamic => todo!("dyn registration"),
     };
 
-    for method in ctx.impl_methods.inner {
-        let ImplementedMethod { sig, .. } = method;
-
+    for sig in ctx.impl_methods.inner {
         if meta.const_methods.inner.contains(&sig.ident) {
             // TODO: the following currently never fires,
             // because rustc aborts parent mod prior to macro exec

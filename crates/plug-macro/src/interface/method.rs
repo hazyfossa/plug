@@ -36,7 +36,7 @@ struct MethodAttrs {
     is_sync_path: bool,
 }
 
-// Todo: consider splitting into ImplMethod and InterfaceMethod
+// TODO: consider splitting into ImplMethod and InterfaceMethod
 pub enum CallTarget {
     Impl,
     Interface,
@@ -45,7 +45,9 @@ pub enum CallTarget {
 pub struct Method {
     // signature is CallTarget::Interface
     pub sig: syn::Signature,
+
     args: Vec<Ident>,
+
     pub kind: MethodKind,
     pub fn_kind: FnKind,
     pub is_final: bool,

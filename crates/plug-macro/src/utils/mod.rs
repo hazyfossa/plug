@@ -106,6 +106,6 @@ pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
 pub fn derive_data() -> TokenStream {
     quote! {
         #[derive(serde::Serialize, serde::Deserialize)]
-        #[serde(crate = ::plug::__codegen::serde)]
+        #[serde(crate = "::plug::__codegen::serde")]
     }
 }

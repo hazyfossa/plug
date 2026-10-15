@@ -1,7 +1,7 @@
 use plug::plug;
 
 #[plug(implement::TestImpl)]
-#[plug(remote)]
+// #[plug(remote)]
 trait Test {
     fn associated() -> String;
     async fn foo(&self) -> bool;
@@ -13,7 +13,6 @@ mod implement {
     use plug::plug;
 
     #[plug]
-    // TODO (cfg derives) #[derive(Default)]
     struct TestImpl {
         a: String,
         b: String,
