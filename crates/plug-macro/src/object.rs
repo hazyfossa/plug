@@ -2,7 +2,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 use syn::{Field, ItemStruct, Result, Type, spanned::Spanned};
 
-use crate::bail;
+use crate::{bail, derive_data};
 
 struct StateMatcher {
     passed_marker: bool,
@@ -67,11 +67,12 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
         }
     });
 
+    let derive_data = derive_data();
+
     let content = quote! {
         #(#attrs)*
 
-        #[derive(::plug::__codegen::facet::Facet, Default)]
-        #[facet(crate = ::plug::__codegen::facet)]
+        #derive_data
         pub struct #config_ident {
             #(#config,)*
         }

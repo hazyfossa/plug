@@ -2,6 +2,7 @@ pub mod meta_passing;
 pub mod parse;
 
 use proc_macro2::TokenStream;
+use quote::quote;
 use syn::Result;
 
 pub trait MacroReturn {
@@ -100,4 +101,11 @@ pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
 
     // Compiler should eliminate unwraps with the assert above
     values.retain(|_| *iter.next().unwrap());
+}
+
+pub fn derive_data() -> TokenStream {
+    quote! {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(crate = ::plug::__codegen::serde)]
+    }
 }

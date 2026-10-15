@@ -2,9 +2,11 @@
 
 use eyre::Result;
 
+use crate::Data;
+
 pub trait RemoteDescriptor: crate::InterfaceDescriptor {
-    type Request;
-    type Response;
+    type Request: Data;
+    type Response: Data;
 
     type Client<C: Caller<Self>>: From<C>;
 }

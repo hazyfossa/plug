@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, marker::PhantomData};
 
 use darling::FromAttributes;
 use proc_macro2::TokenStream;
@@ -13,12 +13,14 @@ use crate::{
 };
 
 mod dispatch;
-pub mod implement;
+mod implement;
 mod method;
 mod remote;
 
 use dispatch::{DispatchCode, DispatchTarget};
 use method::{FnKind, Method};
+
+pub use implement::register_impl;
 
 parse!(
 #[derive(Clone)]
@@ -154,7 +156,6 @@ impl InterfaceShape {
             #other_codegen
             #maybe_remote
 
-            // TODO: arbitrarily represented tags
             #[derive(PartialEq)]
             pub struct Tag(#tag_repr);
 
@@ -214,3 +215,38 @@ parse!(
         variable_async_methods: Many<Ident, HashSet<Ident>>,
     }
 );
+
+//
+
+struct Code<T> {
+    body: Vec<TokenStream>,
+    _rules: PhantomData<T>,
+}
+
+trait Codegen {
+    fn handle_method(method: &Method) -> TokenStream;
+    fn codegen(body: Vec<TokenStream>) -> TokenStream;
+}
+
+impl<T: Codegen> Code<T> {
+    fn new() -> Self {
+        Self {
+            body: Vec::new(),
+            _rules: PhantomData,
+        }
+    }
+
+    fn register_method(&mut self, method: &Method) {
+        self.body.push(T::handle_method(method));
+    }
+
+    fn with_methods(methods: &[Method]) -> TokenStream {
+        let mut this = Self::new();
+
+        for method in methods {
+            this.register_method(method);
+        }
+
+        T::codegen(this.body)
+    }
+}

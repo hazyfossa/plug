@@ -6,11 +6,15 @@
 // [ ] loading interfaces from config
 // [ ] storage model (blocked on paradigm)
 // [ ] (try to) rewrite attr parsing
-// [ ] Impl Interface trait for Object
 // [ ] tag runtime parsing
 // [ ] dyn path
 // [ ] resolve `cfg` attrs
 // [ ] Implement Init for Object
+// [ ] Reuse codegen infra for dispatch
+//
+// [ ] Impl Interface trait for Object if no method is associated
+// (requires splitting method.sig the same way as args)
+//
 
 use proc_macro2::TokenStream;
 use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, Visibility, parse::Parse};
@@ -55,7 +59,7 @@ impl Parse for Code {
 fn plug_impl(attrs: TokenStream, input: Code) -> Result<TokenStream> {
     match input {
         Code::Trait(x) => interface::trait_to_interface(syn::parse2(attrs)?, x),
-        Code::Impl(x) => interface::implement::register_impl(syn::parse2(attrs)?, x),
+        Code::Impl(x) => interface::register_impl(syn::parse2(attrs)?, x),
         Code::Struct(x) => object::struct_to_object(syn::parse2(attrs)?, x),
     }
 }
