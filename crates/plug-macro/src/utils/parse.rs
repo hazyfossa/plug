@@ -138,7 +138,7 @@ macro_rules! parse {
         impl quote::ToTokens for $name {
             fn to_tokens(&self, tokens: &mut TokenStream) {
                 match self {
-                    $(Self::$field => Token![$tok](proc_macro2::Span::call_site()).to_tokens(tokens),)*
+                    $(Self::$field => syn::Token![$tok](proc_macro2::Span::call_site()).to_tokens(tokens),)*
                     $(Self::$default => (),)?
                 }
             }

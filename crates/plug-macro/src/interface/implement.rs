@@ -7,13 +7,20 @@ use syn::{
 
 use crate::{
     bail,
-    interface::{CallTarget, FnKind, InterfaceMeta, Method, Mode, registered_module_object_marker},
+    interface::{
+        InterfaceMeta, Mode,
+        method::{CallTarget, FnKind, Method},
+    },
     meta_passing::with_import,
     parse::{Many, PathExt, parse},
 };
 
 pub fn const_redirect(name: &Ident) -> Ident {
     format_ident!("__const_{}", name)
+}
+
+pub fn registered_module_object_marker(interface: &Ident) -> Ident {
+    format_ident!("registered_{interface}_impl_for_this_module")
 }
 
 struct Impl {

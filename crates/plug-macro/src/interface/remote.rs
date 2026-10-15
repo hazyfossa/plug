@@ -6,7 +6,10 @@ use syn::{Result, ReturnType, parse_quote};
 
 use crate::{
     bail,
-    interface::{CallTarget, InterfaceShape, Method},
+    interface::{
+        InterfaceShape,
+        method::{CallTarget, Method},
+    },
 };
 
 struct Code<T> {
@@ -79,7 +82,9 @@ impl Codegen for ResponseBuilder {
     }
 
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
-        quote! { pub enum Response { #(#body),* } }
+        quote! {
+            pub enum Response { #(#body),* }
+        }
     }
 }
 
@@ -120,11 +125,19 @@ impl Codegen for ClientBuilder {
                 where C: Caller<Descriptor>
             {
                 #[inline(always)]
-                pub fn raw(&mut self) -> &mut C {
+                pub(crate) fn raw(&mut self) -> &mut C {
                     &mut self.0
                 }
 
                 #(#body)*
+            }
+
+            impl<C> From<C> for Client<C>
+                where C: Caller<Descriptor>
+            {
+                fn from(caller: C) -> Self {
+                    Self(caller)
+                }
             }
         }
     }

@@ -6,10 +6,11 @@
 // [ ] loading interfaces from config
 // [ ] storage model (blocked on paradigm)
 // [ ] (try to) rewrite attr parsing
-// [ ] Impl Interface trait for InterfacedObjects
+// [ ] Impl Interface trait for Object
 // [ ] tag runtime parsing
 // [ ] dyn path
 // [ ] resolve `cfg` attrs
+// [ ] Implement Init for Object
 
 use proc_macro2::TokenStream;
 use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, Visibility, parse::Parse};

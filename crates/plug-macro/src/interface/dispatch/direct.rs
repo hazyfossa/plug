@@ -5,11 +5,14 @@ use syn::{Ident, Path, Result, parse_quote};
 use crate::{
     amyhow,
     interface::{
-        CallTarget, DispatchCode, InterfaceShape, Method, MethodKind, Mode,
-        registered_module_object_marker,
+        InterfaceShape,
+        implement::registered_module_object_marker,
+        method::{CallTarget, Method, MethodKind},
     },
     parse::PathExt,
 };
+
+use super::{DispatchCode, Mode};
 
 // Technically, this is a self-referrential struct
 struct ImplRef {
