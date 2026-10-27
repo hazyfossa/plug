@@ -1,7 +1,8 @@
 use plug::plug;
 
 #[plug(implement::TestImpl)]
-// #[plug(remote)]
+#[plug(remote)]
+#[plug(tag_repr = u32)]
 trait Test {
     fn associated() -> String;
     async fn foo(&self) -> bool;
@@ -18,7 +19,7 @@ mod implement {
         b: String,
     }
 
-    #[plug]
+    #[plug(0)]
     impl Test::Interface for TestImpl {
         fn associated() -> String {
             "Hello, world".to_string()

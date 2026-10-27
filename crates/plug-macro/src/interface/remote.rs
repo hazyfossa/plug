@@ -95,7 +95,10 @@ impl Codegen for ClientBuilder {
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
         quote! {
             impl<C> Client<C>
-                where C: Caller<Descriptor>
+            where
+                C: Caller<Descriptor>,
+                eyre::Error: From<C::Error>,
+
             {
                 #[inline(always)]
                 pub(crate) fn raw(&mut self) -> &mut C {

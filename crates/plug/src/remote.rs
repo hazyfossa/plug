@@ -13,6 +13,6 @@ pub trait RemoteDescriptor: crate::InterfaceDescriptor {
 
 #[allow(async_fn_in_trait)]
 pub trait Caller<S: RemoteDescriptor> {
-    type Error: Into<eyre::Error>;
+    type Error;
     async fn call(&mut self, request: S::Request) -> Result<S::Response, Self::Error>;
 }

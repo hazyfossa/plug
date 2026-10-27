@@ -1,4 +1,3 @@
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 
 pub use plug_macro::plug;
@@ -26,7 +25,7 @@ pub trait Object {
 #[allow(async_fn_in_trait)]
 pub trait Init: Object + Sized {
     // TODO: optimize async init via AsyncMethod
-    async fn init(config: &Self::Config) -> Result<Self>;
+    async fn init(config: &Self::Config) -> eyre::Result<Self>;
 }
 
 pub trait Tagged<I: InterfaceDescriptor> {
