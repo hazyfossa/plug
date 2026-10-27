@@ -36,6 +36,11 @@ struct InterfaceOptions {
     #[darling(default, rename = "remote")]
     is_remote: bool,
 
+    // NOTE: the default, string repr is performant enough for most cases
+    // it is stored as a pointer to a 'static str
+    // the only application for other reprs are tags with width less than that of a pointer
+    //
+    // TODO: support for tag_type (const define will need to be out-of-trait)
     tag_repr: Option<Type>,
 }
 
@@ -142,6 +147,9 @@ impl InterfaceShape {
             .clone()
             .unwrap_or(parse_quote! { &'static str });
 
+        // let mut stored_tag_repr = tag_repr.clone();
+        // make_static(&mut stored_tag_repr);
+
         let final_methods = self.final_methods.clone();
         let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
         let derive_data = derive_data();
@@ -158,20 +166,33 @@ impl InterfaceShape {
             #other_codegen
             #maybe_remote
 
-            #derive_data
-            #[derive(PartialEq)]
+            #derive_data // TODO: custom derive
+            #[derive(PartialEq, Clone, Copy)]
             pub struct Tag(#tag_repr);
 
-            // TODO: tag parsing with exhaustive hints
             impl Tag {
                 pub(crate) const fn define(repr: #tag_repr) -> Self { Self(repr) }
+
+                // TODO: parse error with exhaustive hints
+                pub fn parse(value: impl PartialEq<#tag_repr>) -> Option<Self> {
+                    ALL.iter().find(|tag| &value == &tag.0).copied()
+                }
+            }
+
+            // TODO: redefine codegen-pass shape to allow replacing the definition wholesale
+            const ALL: &[Tag] = #all_tags;
+
+            impl Object {
+                pub(crate) fn current_tag(&self) -> Tag {
+                    todo!();
+                }
             }
 
             pub struct Descriptor;
 
             impl ::plug::InterfaceDescriptor for Descriptor {
                 type Tag = Tag;
-                const ALL: &[Self::Tag] = #all_tags;
+                const ALL: &[Self::Tag] = ALL;
             }
 
             impl Object {

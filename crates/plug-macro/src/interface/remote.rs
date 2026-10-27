@@ -134,7 +134,8 @@ impl Codegen for CallerBuilder {
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
         quote! {
             impl Caller<Descriptor> for Object {
-                async fn call(&mut self, request: Request) -> eyre::Result<Response> {
+                type Error = std::convert::Infallible;
+                async fn call(&mut self, request: Request) -> Result<Response, std::convert::Infallible> {
                     match request { #(#body)* }
                 }
             }

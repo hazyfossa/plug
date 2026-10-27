@@ -34,6 +34,7 @@ impl StateMatcher {
 pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenStream> {
     let tag: Option<Literal> = syn::parse2(attrs)?; // TODO-ref: non-string inherent tags
 
+    // TODO: the following definitely does not make sense for mode::FromMod impls
     let tag = tag
         .map(|x| x.to_token_stream())
         .unwrap_or(input.ident.to_string().to_token_stream());

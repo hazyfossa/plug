@@ -76,8 +76,6 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
     let paths: Vec<_> = impls.iter().map(|x| &x.path).collect();
     let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
 
-    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
-
     let object = quote! {
         pub enum Object { #(
             #variants(#paths),
@@ -91,6 +89,7 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
         .map(|m| dispatch_one_method(&impls, m))
         .collect();
 
+    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
     let all_tags = quote! { &[#(#tags,)*] };
 
     Ok(DispatchCode {

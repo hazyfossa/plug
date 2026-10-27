@@ -3,7 +3,7 @@ pub mod parse;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::Result;
+use syn::{Result, Type, TypeReference, parse_quote};
 
 pub trait MacroReturn {
     fn into_syn_result(self) -> Result<TokenStream>;
@@ -103,9 +103,11 @@ pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
     values.retain(|_| *iter.next().unwrap());
 }
 
+pub const SERDE_PATH: &str = "::plug::__codegen::serde";
+
 pub fn derive_data() -> TokenStream {
     quote! {
         #[derive(serde::Serialize, serde::Deserialize)]
-        #[serde(crate = "::plug::__codegen::serde")]
+        #[serde(crate = #SERDE_PATH)]
     }
 }

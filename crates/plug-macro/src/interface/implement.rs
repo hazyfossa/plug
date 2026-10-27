@@ -1,8 +1,8 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Ident, ImplItem, ImplItemFn, ItemImpl, Path, Result, Signature, Type, parse::Nothing,
-    parse_quote, spanned::Spanned,
+    Ident, ImplItem, ImplItemFn, ItemImpl, Path, Result, Signature, Type, parse_quote,
+    spanned::Spanned,
 };
 
 use crate::{
