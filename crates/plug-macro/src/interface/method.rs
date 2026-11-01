@@ -155,8 +155,7 @@ impl Method {
     }
 
     pub fn call(&self, target: CallTarget, target_path: &Path) -> TokenStream {
-        let name = if matches!(&self.fn_kind, FnKind::Const)
-            && matches!(&target, CallTarget::Impl { .. })
+        let name = if matches!(&self.fn_kind, FnKind::Const) && matches!(&target, CallTarget::Impl)
         {
             const_redirect(&self.sig.ident)
         } else {

@@ -1,3 +1,4 @@
+#![allow(async_fn_in_trait)]
 use serde::{Deserialize, Serialize};
 
 pub use plug_macro::plug;
@@ -13,8 +14,12 @@ impl<T: for<'a> BorrowedData<'a> + 'static> Data for T {}
 
 pub trait InterfaceDescriptor {
     // type Error;
-    type Tag: BorrowedData<'static> + PartialEq;
+    type Config;
+    type Object;
+    type Tag: BorrowedData<'static> + PartialEq + Copy;
     const ALL: &[Self::Tag];
+
+    async fn load(cfg: &Self::Config, tag: Self::Tag) -> eyre::Result<Self::Object>;
 }
 
 pub trait Object {
@@ -22,7 +27,6 @@ pub trait Object {
 }
 
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
-#[allow(async_fn_in_trait)]
 pub trait Init: Object + Sized {
     // TODO: optimize async init via AsyncMethod
     async fn init(config: &Self::Config) -> eyre::Result<Self>;

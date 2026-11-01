@@ -147,23 +147,17 @@ impl InterfaceShape {
             .clone()
             .unwrap_or(parse_quote! { &'static str });
 
-        // let mut stored_tag_repr = tag_repr.clone();
-        // make_static(&mut stored_tag_repr);
-
         let final_methods = self.final_methods.clone();
         let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
         let derive_data = derive_data();
 
         let DispatchCode {
-            all_tags,
-            object,
             dispatched_methods,
-            other_codegen,
+            codegen,
         } = dispatch::dispatch(self)?;
 
         let content = quote! {
-            #object
-            #other_codegen
+            #codegen // ALL, Config, Object
             #maybe_remote
 
             #derive_data // TODO: custom derive
@@ -179,9 +173,6 @@ impl InterfaceShape {
                 }
             }
 
-            // TODO: redefine codegen-pass shape to allow replacing the definition wholesale
-            const ALL: &[Tag] = #all_tags;
-
             impl Object {
                 pub(crate) fn current_tag(&self) -> Tag {
                     todo!();
@@ -191,8 +182,14 @@ impl InterfaceShape {
             pub struct Descriptor;
 
             impl ::plug::InterfaceDescriptor for Descriptor {
+                type Config = Config;
+                type Object = Object;
                 type Tag = Tag;
                 const ALL: &[Self::Tag] = ALL;
+
+                async fn load(cfg: &Config, tag: Tag) -> eyre::Result<Object> {
+                    todo!()
+                }
             }
 
             impl Object {

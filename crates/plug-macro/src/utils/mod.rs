@@ -3,7 +3,7 @@ pub mod parse;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Result, Type, TypeReference, parse_quote};
+use syn::Result;
 
 pub trait MacroReturn {
     fn into_syn_result(self) -> Result<TokenStream>;

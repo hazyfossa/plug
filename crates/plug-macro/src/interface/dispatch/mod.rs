@@ -40,11 +40,13 @@ impl DispatchMode {
     }
 }
 
+// `codegen` should provide the following Items:
+// `ALL` - array of all located tags
+// `Config` - a sum type of all `Object::Config`s
+// `Object` - a product type of all `Object`s
 pub struct DispatchCode {
-    pub all_tags: TokenStream,
-    pub object: TokenStream,
     pub dispatched_methods: Vec<TokenStream>,
-    pub other_codegen: Option<TokenStream>,
+    pub codegen: TokenStream,
 }
 
 //

@@ -3,7 +3,7 @@ use quote::quote;
 use syn::{Ident, Path, Result, parse_quote};
 
 use crate::{
-    amyhow,
+    amyhow, derive_data,
     interface::{
         InterfaceShape,
         implement::registered_module_object_marker,
@@ -31,7 +31,7 @@ impl ImplRef {
 fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
     let ImplRef { path, variant } = impl_;
 
-    let content = match method.kind {
+    match method.kind {
         MethodKind::Stateful => {
             let call = method.call(CallTarget::Impl, &parse_quote!(obj));
 
@@ -42,9 +42,7 @@ fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
             let call = method.call(CallTarget::Impl, path);
             quote! { #tag => #call }
         }
-    };
-
-    content
+    }
 }
 
 fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> TokenStream {
@@ -75,8 +73,18 @@ fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> TokenStream {
 fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<DispatchCode> {
     let paths: Vec<_> = impls.iter().map(|x| &x.path).collect();
     let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
+    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
 
-    let object = quote! {
+    let derive_data = derive_data();
+
+    let codegen = quote! {
+        const ALL: &[Tag] = &[#(#tags,)*];
+
+        #derive_data
+        pub struct Config {
+
+        }
+
         pub enum Object { #(
             #variants(#paths),
         )*}
@@ -89,14 +97,9 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
         .map(|m| dispatch_one_method(&impls, m))
         .collect();
 
-    let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
-    let all_tags = quote! { &[#(#tags,)*] };
-
     Ok(DispatchCode {
-        all_tags,
-        object,
+        codegen,
         dispatched_methods,
-        other_codegen: None,
     })
 }
 
