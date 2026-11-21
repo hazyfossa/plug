@@ -6,7 +6,7 @@ use syn::{
     TraitItemFn, Type, parse_quote, spanned::Spanned,
 };
 
-use crate::{TokenDef, bail, interface::implement::const_redirect, parse::parse_attrs};
+use crate::{TokenDef, bail, interface::const_redirect, parse::parse_attrs};
 
 pub enum FnKind {
     Regular,
@@ -60,7 +60,7 @@ impl ToTokens for MethodArg {
     }
 }
 
-// TODO: consider splitting into ImplMethod and InterfaceMethod
+#[derive(Clone, Copy)]
 pub enum CallTarget {
     Impl,
     Interface,
@@ -70,7 +70,7 @@ pub struct Method {
     pub name: Ident,
     receiver: Option<Receiver>,
     args: Vec<MethodArg>,
-    ret: Type,
+    pub ret: Type,
 
     pub fn_kind: FnKind,
     pub is_final: bool,
@@ -112,16 +112,6 @@ impl Method {
             FnKind::Regular
         };
 
-        // let mut object_signature = sig.clone();
-
-        // if matches!(fn_kind, FnKind::Const) {
-        //     object_signature.constness = parse_quote!(const);
-        // }
-
-        // if matches!(kind, MethodKind::Associated) {
-        //     object_signature.inputs.insert(0, parse_quote!(tag: Tag));
-        // }
-
         let mut receiver = None;
         let mut args = Vec::new();
 
@@ -130,7 +120,6 @@ impl Method {
                 FnArg::Receiver(r) => {
                     receiver.replace(r.clone());
                 }
-                // TODO: this will become more complex when we add versioning
                 FnArg::Typed(p) => args.push(MethodArg::from_pattern(p)?),
             }
         }
@@ -162,7 +151,7 @@ impl Method {
         !self.is_final
     }
 
-    fn requires_tag(&self, target: &CallTarget) -> bool {
+    fn requires_tag(&self, target: CallTarget) -> bool {
         // When calling an associated method of an interface,
         // the interface has no knowledge of what impl to use.
         //
@@ -175,14 +164,13 @@ impl Method {
 
     // TODO: better clarify in code that receiver / tag are mutually exclusive
 
-    fn arguments(&self, target: &CallTarget) -> TokenStream {
-        let receiver = &self.receiver;
+    pub fn arguments(&self, target: CallTarget) -> TokenStream {
         let tag = self.requires_tag(target).then_some(quote! {tag: Tag});
         let args = &self.args;
-        quote! { #receiver #tag #(#args)* }
+        quote! { #tag #(#args)* }
     }
 
-    fn inputs(&self, target: &CallTarget) -> TokenStream {
+    pub fn inputs(&self, target: CallTarget) -> TokenStream {
         let tag = self.requires_tag(target).then_some(quote! { tag });
         let args = self.args.iter().map(|x| x.ident());
         quote! {#tag #(#args)* }
@@ -196,7 +184,7 @@ impl Method {
             &self.name
         };
 
-        let inputs = self.inputs(&target);
+        let inputs = self.inputs(target);
 
         let access = match self.kind() {
             MethodKind::Associated => quote! { :: },
@@ -218,8 +206,7 @@ impl Method {
         self.call(target, &target_path)
     }
 
-    // Emitted signature does not include `vis`
-    pub fn signature(&self, target: &CallTarget) -> TokenStream {
+    pub fn signature(&self, target: CallTarget) -> TokenStream {
         let modifier = match self.fn_kind {
             FnKind::Async { .. } => Some(quote! { async }),
             FnKind::Const => Some(quote! { const }),
@@ -227,9 +214,10 @@ impl Method {
         };
 
         let name = &self.name;
+        let receiver = &self.receiver;
         let args = self.arguments(target);
         let ret = &self.ret;
 
-        quote! { #modifier fn #name( #args ) -> #ret }
+        quote! { #modifier fn #name( #receiver #args ) -> #ret }
     }
 }

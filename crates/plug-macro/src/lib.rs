@@ -12,8 +12,9 @@ use proc_macro2::TokenStream;
 use syn::{Attribute, ItemImpl, ItemStruct, ItemTrait, Result, Token, Visibility, parse::Parse};
 
 mod interface;
+mod method;
 mod object;
-// mod remote;
+mod remote;
 
 mod utils;
 use utils::*;

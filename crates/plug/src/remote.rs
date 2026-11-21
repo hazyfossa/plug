@@ -4,7 +4,7 @@ use eyre::Result;
 
 use crate::Data;
 
-pub trait RemoteDescriptor: crate::InterfaceDescriptor {
+pub trait RemoteDescriptor {
     type Request: Data;
     type Response: Data;
 

@@ -4,11 +4,8 @@ use syn::{Ident, Path, Result, parse_quote};
 
 use crate::{
     amyhow, derive_data,
-    interface::{
-        InterfaceShape,
-        implement::registered_module_object_marker,
-        method::{CallTarget, Method, MethodKind},
-    },
+    interface::{InterfaceShape, implement::registered_module_object_marker},
+    method::{CallTarget, Method, MethodKind},
     parse::PathExt,
 };
 
@@ -21,7 +18,7 @@ struct ImplRef {
 }
 
 impl ImplRef {
-    // Uses well-known items from purescope: Descriptor
+    // Uses well-known items from scope: Descriptor
     fn tag(&self) -> TokenStream {
         let path = &self.path;
         quote! { <#path as ::plug::Tagged<Descriptor>>::TAG }
@@ -53,7 +50,7 @@ fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> TokenStream {
 
     let branches = impls.iter().map(|impl_| branch(method, impl_));
 
-    let sig = &method.signature(&CallTarget::Interface);
+    let sig = &method.signature(CallTarget::Interface);
     let content = quote! { pub #sig {
         match #determinant {
             #(#branches,)*

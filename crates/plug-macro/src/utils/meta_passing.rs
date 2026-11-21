@@ -154,15 +154,15 @@ pub fn import<Aux: ToTokens>(
 }
 
 macro_rules! with_import {
-    (#simple $source:ident => $fn:ident($aux:ident)) => {
-        $crate::meta_passing::with_import!([$source] => |$aux, imported_raw| {
+    ($source:ident => $fn:ident($aux:ident)) => {
+        $crate::meta_passing::with_import!(#stack [$source] => |$aux, imported_raw| {
             let mut raw = imported_raw;
             let imp = raw.pop().unwrap();
             $fn($aux, imp)
         })
     };
 
-    ($sources:expr => |$aux:ident, $imp:ident| { $($body:tt)* } ) => {
+    (#stack $sources:expr => |$aux:ident, $imp:ident| { $($body:tt)* } ) => {
         $crate::meta_passing::import($sources, $aux, move |raw| {
             let ($aux, $imp) = raw.decode()?;
             let ret = { $($body)* };

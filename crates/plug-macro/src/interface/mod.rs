@@ -8,18 +8,18 @@ use syn::{Ident, ItemTrait, Result, TraitItem, TraitItemFn, Type, parse_quote, s
 use crate::{
     bail, derive_data, ensure_empty_tokens,
     meta_passing::export,
+    method::{FnKind, Method},
     parse::{Many, parse, parse_attrs},
+    remote::remote_codegen,
     retain_by_mask,
 };
 
 mod dispatch;
 mod implement;
-mod method;
 
 use dispatch::{DispatchCode, DispatchTarget};
-use method::{FnKind, Method};
 
-pub use implement::register_impl;
+pub use implement::{const_redirect, register_impl};
 
 parse!(
 #[derive(Clone)]
@@ -146,7 +146,13 @@ impl InterfaceShape {
             .unwrap_or(parse_quote! { &'static str });
 
         let final_methods = self.final_methods.clone();
-        // let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
+
+        let maybe_remote = self.options.is_remote.then_some(remote_codegen(
+            &self.methods,
+            format_ident!("remote"),
+            format_ident!("Object"),
+        )?);
+
         let derive_data = derive_data();
 
         let DispatchCode {
@@ -156,7 +162,7 @@ impl InterfaceShape {
 
         let content = quote! {
             #codegen // ALL, Config, Object
-            // #maybe_remote
+            #maybe_remote
 
             #derive_data // TODO: custom derive
             #[derive(PartialEq, Clone, Copy)]

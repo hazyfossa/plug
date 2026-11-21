@@ -1,18 +1,13 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Result, ReturnType, parse_quote};
+use syn::{Ident, Result};
 
 use crate::{
-    bail, derive_data,
-    interface::{
-        Code, Codegen, InterfaceShape,
-        method::{CallTarget, Method},
-    },
+    derive_data,
+    method::{CallTarget, Method},
 };
 
 use std::marker::PhantomData;
-
-use proc_macro2::TokenStream;
 
 struct Code<T> {
     body: Vec<TokenStream>,
@@ -51,10 +46,10 @@ struct RequestBuilder;
 
 impl Codegen for RequestBuilder {
     fn handle_method(method: &Method) -> TokenStream {
-        let name = &method.sig.ident;
-        let inputs = method.input_shape(CallTarget::Interface);
+        let name = &method.name;
+        let arguments = method.arguments(CallTarget::Interface);
 
-        quote! { #name { #inputs } }
+        quote! { #name { #arguments } }
     }
 
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
@@ -74,18 +69,12 @@ struct ResponseBuilder;
 
 impl Codegen for ResponseBuilder {
     fn handle_method(method: &Method) -> TokenStream {
-        let name = &method.sig.ident;
+        let name = &method.name;
+        let ret = &method.ret;
 
-        // TODO: consider Result as special case here
-        let output = match &method.sig.output {
-            ReturnType::Type(_, x) => x,
-            ReturnType::Default => {
-                bail!(@immediately name => "Remote methods without a return value are TBD. 
-                Consider specifying `-> ()` in the meantime.")
-            }
-        };
+        // TODO: consider Result as special case of ret here
 
-        quote! { #name( #output ) }
+        quote! { #name( #ret ) }
     }
 
     fn codegen(body: Vec<TokenStream>) -> TokenStream {
@@ -102,25 +91,18 @@ struct ClientBuilder;
 
 impl Codegen for ClientBuilder {
     fn handle_method(method: &Method) -> TokenStream {
-        let name = &method.sig.ident;
+        let name = &method.name;
 
-        let args = &method.args(CallTarget::Interface);
-        let inputs = method.input_shape(CallTarget::Interface);
-
-        let mut client_sig = method.sig.clone();
-        client_sig.constness = None;
-        client_sig.asyncness = Some(parse_quote!(async));
+        let args = &method.arguments(CallTarget::Interface);
+        let inputs = method.inputs(CallTarget::Interface);
 
         // TODO: looks.. not great
-        let previous_ret = match &method.sig.output {
-            ReturnType::Type(_, x) => x,
-            _ => unreachable!(), // guarded by ResponseBuilder
-        };
+        let ret = &method.ret;
 
         quote! {
-            pub async fn #name(&mut self, #inputs) -> eyre::Result<#previous_ret> {
+            pub async fn #name(&mut self, #args) -> eyre::Result<#ret> {
                 // TODO: add context here that error comes from caller
-                let ret = self.raw().call(Request::#name { #args }).await?;
+                let ret = self.raw().call(Request::#name { #inputs }).await?;
                 match ret {
                     Response::#name(output) => Ok(output),
                     other => todo!("Invalid variant error"),
@@ -160,12 +142,12 @@ struct CallerBuilder;
 
 impl Codegen for CallerBuilder {
     fn handle_method(method: &Method) -> TokenStream {
-        let name = &method.sig.ident;
-        let args = method.args(CallTarget::Interface);
+        let name = &method.name;
+        let inputs = method.inputs(CallTarget::Interface);
 
         let call = method.call_via_self(CallTarget::Interface);
 
-        quote! { Request::#name { #args } => {
+        quote! { Request::#name { #inputs } => {
             let ret = #call;
             Ok(Response::#name(ret))
         } }
@@ -183,30 +165,30 @@ impl Codegen for CallerBuilder {
     }
 }
 
-impl InterfaceShape {
-    pub fn remote_codegen(&self) -> Result<TokenStream> {
-        let request = Code::<RequestBuilder>::with_methods(&self.methods);
-        let response = Code::<ResponseBuilder>::with_methods(&self.methods);
-        let client_impl = Code::<ClientBuilder>::with_methods(&self.methods);
-        let caller_impl = Code::<CallerBuilder>::with_methods(&self.methods);
+pub fn remote_codegen(methods: &[Method], scope_name: Ident, object: Ident) -> Result<TokenStream> {
+    let request = Code::<RequestBuilder>::with_methods(methods);
+    let response = Code::<ResponseBuilder>::with_methods(methods);
+    let client_impl = Code::<ClientBuilder>::with_methods(methods);
+    let caller_impl = Code::<CallerBuilder>::with_methods(methods);
 
-        let content = quote! {
-            mod remote {
-                use super::*;
-                use ::plug::remote::*;
+    let content = quote! {
+        mod #scope_name {
+            use super::*;
+            use ::plug::remote::*;
 
-                pub struct Client<C>(C);
+            pub struct Client<C>(C);
 
-                impl RemoteDescriptor for Descriptor {
-                    type Request = Request;
-                    type Response = Response;
-                    type Client<C: Caller<Descriptor>> = Client<C>;
-                }
-
-                #request #response #client_impl #caller_impl
+            impl RemoteDescriptor for #object {
+                type Request = Request;
+                type Response = Response;
+                type Client<C: Caller<Self>> = Client<C>;
             }
-        };
 
-        Ok(content)
-    }
+            type Descriptor = #object;
+
+            #request #response #client_impl #caller_impl
+        }
+    };
+
+    Ok(content)
 }

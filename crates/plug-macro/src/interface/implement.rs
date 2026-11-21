@@ -7,11 +7,9 @@ use syn::{
 
 use crate::{
     bail,
-    interface::{
-        InterfaceMeta, Mode,
-        method::{CallTarget, FnKind, Method},
-    },
+    interface::{InterfaceMeta, Mode},
     meta_passing::with_import,
+    method::{CallTarget, FnKind, Method},
     parse::{Many, PathExt, parse},
 };
 
@@ -39,8 +37,6 @@ impl Impl {
             methods: Vec::new(),
         }
     }
-
-    // fn parse(input: &mut ImplItem) -> Result<Self> {}
 
     fn copy_to_inherent(&mut self, func: &ImplItemFn) {
         let mut inherent = func.clone();
@@ -77,7 +73,7 @@ impl Impl {
         };
 
         let meta = ctx.interface.join(format_ident!("__meta"));
-        let cons = with_import!(#simple meta => register_impl_inner(ctx))?;
+        let cons = with_import!(meta => register_impl_inner(ctx))?;
 
         let content = quote! {
             #cons
