@@ -28,7 +28,6 @@ pub trait Object {
 
 // TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
 pub trait Init: Object + Sized {
-    // TODO: optimize async init via AsyncMethod
     async fn init(config: &Self::Config) -> eyre::Result<Self>;
 }
 

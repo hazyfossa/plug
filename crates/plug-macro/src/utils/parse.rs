@@ -16,7 +16,6 @@ use crate::bail;
 
 // Many
 
-// TODO: nicer signature for custom collections (GAT)
 pub struct Many<T, C = Vec<T>> {
     pub inner: C,
     _phantom: PhantomData<T>,

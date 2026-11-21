@@ -83,9 +83,16 @@ impl Method {
 
         let method = Self::parse(attrs, sig)?;
 
-        // Const methods are not supported as trait items by rustc
-        // const-ness is restored by redirecting the call chain through an inherent impl
-        sig.constness = None;
+        if matches!(method.fn_kind, FnKind::Const) {
+            // Const methods are not supported as trait items by rustc
+            // const-ness is later restored by redirecting the call chain
+            // through an inherent impl
+            sig.constness = None;
+
+            // This silences an inaccurate warning, which happens
+            // because of our const-method redirection through inherents
+            attrs.push(parse_quote!(#[allow(dead_code)]));
+        }
 
         Ok(method)
     }

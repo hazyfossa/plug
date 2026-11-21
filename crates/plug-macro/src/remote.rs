@@ -96,7 +96,6 @@ impl Codegen for ClientBuilder {
         let args = &method.arguments(CallTarget::Interface);
         let inputs = method.inputs(CallTarget::Interface);
 
-        // TODO: looks.. not great
         let ret = &method.ret;
 
         quote! {

@@ -36,6 +36,7 @@ mod implement {
     }
 }
 
+#[allow(unused)]
 fn do_something(x: Test::Object) {
     let a = x.bar();
 

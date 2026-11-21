@@ -50,7 +50,7 @@ impl Impl {
     }
 
     fn register_method(&mut self, func: &mut ImplItemFn) -> Result<()> {
-        let method = Method::parse(&mut func.attrs, &mut func.sig)?;
+        let method = Method::parse(&mut func.attrs, &func.sig)?;
 
         if matches!(method.fn_kind, FnKind::Const) {
             self.copy_to_inherent(func);
