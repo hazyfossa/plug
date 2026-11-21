@@ -1,4 +1,4 @@
-use std::{collections::HashSet, marker::PhantomData};
+use std::collections::HashSet;
 
 use darling::FromAttributes;
 use proc_macro2::TokenStream;
@@ -15,7 +15,6 @@ use crate::{
 mod dispatch;
 mod implement;
 mod method;
-mod remote;
 
 use dispatch::{DispatchCode, DispatchTarget};
 use method::{FnKind, Method};
@@ -97,12 +96,11 @@ impl InterfaceShape {
     }
 
     fn register_method(&mut self, input: &mut TraitItemFn) -> Result<&Method> {
-        let sig = &mut input.sig;
-        let method = Method::parse(&mut input.attrs, sig)?;
+        let method = Method::from_trait(input)?;
 
         if matches!(method.fn_kind, FnKind::Const) && !self.dispatch_target.supports_const() {
             bail!(
-                sig.ident =>
+                input.sig.ident =>
                 "Const fn is not supported when using dynamic dispatch"
             );
         }
@@ -117,7 +115,7 @@ impl InterfaceShape {
         let mut const_methods = HashSet::new();
 
         for method in &self.methods {
-            let ident = &method.sig.ident;
+            let ident = &method.name;
             match method.fn_kind {
                 FnKind::Const => {
                     const_methods.insert(ident.clone());
@@ -148,7 +146,7 @@ impl InterfaceShape {
             .unwrap_or(parse_quote! { &'static str });
 
         let final_methods = self.final_methods.clone();
-        let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
+        // let maybe_remote = self.options.is_remote.then_some(self.remote_codegen()?);
         let derive_data = derive_data();
 
         let DispatchCode {
@@ -158,7 +156,7 @@ impl InterfaceShape {
 
         let content = quote! {
             #codegen // ALL, Config, Object
-            #maybe_remote
+            // #maybe_remote
 
             #derive_data // TODO: custom derive
             #[derive(PartialEq, Clone, Copy)]
@@ -236,38 +234,3 @@ parse!(
         variable_async_methods: Many<Ident, HashSet<Ident>>,
     }
 );
-
-//
-
-struct Code<T> {
-    body: Vec<TokenStream>,
-    _rules: PhantomData<T>,
-}
-
-trait Codegen {
-    fn handle_method(method: &Method) -> TokenStream;
-    fn codegen(body: Vec<TokenStream>) -> TokenStream;
-}
-
-impl<T: Codegen> Code<T> {
-    fn new() -> Self {
-        Self {
-            body: Vec::new(),
-            _rules: PhantomData,
-        }
-    }
-
-    fn register_method(&mut self, method: &Method) {
-        self.body.push(T::handle_method(method));
-    }
-
-    fn with_methods(methods: &[Method]) -> TokenStream {
-        let mut this = Self::new();
-
-        for method in methods {
-            this.register_method(method);
-        }
-
-        T::codegen(this.body)
-    }
-}

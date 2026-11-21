@@ -31,7 +31,7 @@ impl ImplRef {
 fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
     let ImplRef { path, variant } = impl_;
 
-    match method.kind {
+    match method.kind() {
         MethodKind::Stateful => {
             let call = method.call(CallTarget::Impl, &parse_quote!(obj));
 
@@ -46,14 +46,14 @@ fn branch(method: &Method, impl_: &ImplRef) -> TokenStream {
 }
 
 fn dispatch_one_method(impls: &[ImplRef], method: &Method) -> TokenStream {
-    let determinant = match &method.kind {
+    let determinant = match &method.kind() {
         MethodKind::Stateful => quote! { self },
         MethodKind::Associated => quote! { tag },
     };
 
     let branches = impls.iter().map(|impl_| branch(method, impl_));
 
-    let sig = &method.sig;
+    let sig = &method.signature(&CallTarget::Interface);
     let content = quote! { pub #sig {
         match #determinant {
             #(#branches,)*

@@ -10,6 +10,43 @@ use crate::{
     },
 };
 
+use std::marker::PhantomData;
+
+use proc_macro2::TokenStream;
+
+struct Code<T> {
+    body: Vec<TokenStream>,
+    _rules: PhantomData<T>,
+}
+
+trait Codegen {
+    fn handle_method(method: &Method) -> TokenStream;
+    fn codegen(body: Vec<TokenStream>) -> TokenStream;
+}
+
+impl<T: Codegen> Code<T> {
+    fn new() -> Self {
+        Self {
+            body: Vec::new(),
+            _rules: PhantomData,
+        }
+    }
+
+    fn register_method(&mut self, method: &Method) {
+        self.body.push(T::handle_method(method));
+    }
+
+    fn with_methods(methods: &[Method]) -> TokenStream {
+        let mut this = Self::new();
+
+        for method in methods {
+            this.register_method(method);
+        }
+
+        T::codegen(this.body)
+    }
+}
+
 struct RequestBuilder;
 
 impl Codegen for RequestBuilder {

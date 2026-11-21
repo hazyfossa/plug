@@ -1,3 +1,4 @@
+pub mod codegen;
 pub mod meta_passing;
 pub mod parse;
 
@@ -93,6 +94,13 @@ macro_rules! ensure_empty_tokens {
     };
 }
 pub(crate) use ensure_empty_tokens;
+
+macro_rules! TokenDef {
+    ($($tt:tt)*) => [
+        syn::Token![$($tt)*](proc_macro2::Span::call_site())
+    ];
+}
+pub(crate) use TokenDef;
 
 pub fn retain_by_mask<T>(mask: &[bool], values: &mut Vec<T>) {
     assert_eq!(mask.len(), values.len());

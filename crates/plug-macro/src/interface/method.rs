@@ -1,9 +1,12 @@
 use darling::FromAttributes;
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{Attribute, FnArg, Ident, Pat, Path, Result, Signature, parse_quote, spanned::Spanned};
+use quote::{ToTokens, quote};
+use syn::{
+    Attribute, FnArg, Ident, Pat, PatIdent, PatType, Path, Receiver, Result, ReturnType, Signature,
+    TraitItemFn, Type, parse_quote, spanned::Spanned,
+};
 
-use crate::{bail, interface::implement::const_redirect, parse::parse_attrs};
+use crate::{TokenDef, bail, interface::implement::const_redirect, parse::parse_attrs};
 
 pub enum FnKind {
     Regular,
@@ -14,15 +17,6 @@ pub enum FnKind {
 pub enum MethodKind {
     Stateful,
     Associated,
-}
-
-impl MethodKind {
-    fn parse(sig: &syn::Signature) -> Self {
-        match sig.receiver() {
-            Some(_) => Self::Stateful,
-            None => Self::Associated,
-        }
-    }
 }
 
 #[derive(FromAttributes)]
@@ -36,6 +30,36 @@ struct MethodAttrs {
     is_sync_path: bool,
 }
 
+pub struct MethodArg {
+    binding: PatIdent,
+    pub ty: Type,
+}
+
+impl MethodArg {
+    fn from_pattern(p: &PatType) -> Result<Self> {
+        let binding = match &*p.pat {
+            Pat::Ident(x) => x.clone(),
+            other => bail!(other => "Unsupported syntax"),
+        };
+
+        let ty = *p.ty.clone();
+
+        Ok(Self { binding, ty })
+    }
+
+    pub fn ident(&self) -> &Ident {
+        &self.binding.ident
+    }
+}
+
+impl ToTokens for MethodArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.binding.to_tokens(tokens);
+        TokenDef![:].to_tokens(tokens);
+        self.ty.to_tokens(tokens);
+    }
+}
+
 // TODO: consider splitting into ImplMethod and InterfaceMethod
 pub enum CallTarget {
     Impl,
@@ -43,23 +67,32 @@ pub enum CallTarget {
 }
 
 pub struct Method {
-    // signature is CallTarget::Interface
-    pub sig: syn::Signature,
+    pub name: Ident,
+    receiver: Option<Receiver>,
+    args: Vec<MethodArg>,
+    ret: Type,
 
-    args: Vec<Ident>,
-
-    pub kind: MethodKind,
     pub fn_kind: FnKind,
     pub is_final: bool,
 }
 
 impl Method {
-    // This function will leave the signature as appropriate for a trait item
-    // while storing an internal copy for dispatch
-    pub fn parse(attrs: &mut Vec<Attribute>, sig: &mut Signature) -> Result<Self> {
-        let kind = MethodKind::parse(sig);
+    pub fn from_trait(item: &mut TraitItemFn) -> Result<Self> {
+        let attrs = &mut item.attrs;
+        let sig = &mut item.sig;
 
+        let method = Self::parse(attrs, sig)?;
+
+        // Const methods are not supported as trait items by rustc
+        // const-ness is restored by redirecting the call chain through an inherent impl
+        sig.constness = None;
+
+        Ok(method)
+    }
+
+    pub fn parse(attrs: &mut Vec<Attribute>, sig: &Signature) -> Result<Self> {
         let attrs: MethodAttrs = parse_attrs(attrs)?;
+        let name = sig.ident.clone();
 
         let is_const = sig.constness.is_some() || attrs.is_const;
         // TODO: support `impl Future` syntax
@@ -68,10 +101,6 @@ impl Method {
         if is_async && is_const {
             bail!(sig.asyncness.unwrap() => "constant async methods are impossible")
         }
-
-        // Const methods are not supported as trait items by rustc
-        // const-ness is restored by redirecting the call chain through an inherent impl
-        sig.constness = None;
 
         let fn_kind = if is_async {
             FnKind::Async {
@@ -83,44 +112,50 @@ impl Method {
             FnKind::Regular
         };
 
-        //
+        // let mut object_signature = sig.clone();
 
-        let mut object_signature = sig.clone();
+        // if matches!(fn_kind, FnKind::Const) {
+        //     object_signature.constness = parse_quote!(const);
+        // }
 
-        if matches!(fn_kind, FnKind::Const) {
-            object_signature.constness = parse_quote!(const);
-        }
+        // if matches!(kind, MethodKind::Associated) {
+        //     object_signature.inputs.insert(0, parse_quote!(tag: Tag));
+        // }
 
-        if matches!(kind, MethodKind::Associated) {
-            object_signature.inputs.insert(0, parse_quote!(tag: Tag));
-        }
-
-        //
-
+        let mut receiver = None;
         let mut args = Vec::new();
 
         for arg in &sig.inputs {
             match arg {
-                FnArg::Receiver(_) => {}
-
-                // TODO: this will become more complex when we add versioning
-                FnArg::Typed(p) if let Pat::Ident(ref arg_p) = *p.pat => {
-                    args.push(arg_p.ident.clone());
+                FnArg::Receiver(r) => {
+                    receiver.replace(r.clone());
                 }
-
-                other => bail!(other => "unsupported syntax"),
+                // TODO: this will become more complex when we add versioning
+                FnArg::Typed(p) => args.push(MethodArg::from_pattern(p)?),
             }
         }
 
-        //
+        let ret = match &sig.output {
+            ReturnType::Default => parse_quote!(()),
+            ReturnType::Type(_, x) => *x.clone(),
+        };
 
         Ok(Self {
-            sig: object_signature,
+            name,
+            receiver,
             args,
-            kind,
+            ret,
+
             fn_kind,
             is_final: attrs.is_final,
         })
+    }
+
+    pub fn kind(&self) -> MethodKind {
+        match self.receiver.is_some() {
+            true => MethodKind::Stateful,
+            false => MethodKind::Associated,
+        }
     }
 
     pub fn requires_dispatch(&self) -> bool {
@@ -128,43 +163,42 @@ impl Method {
     }
 
     fn requires_tag(&self, target: &CallTarget) -> bool {
-        matches!(target, CallTarget::Interface) && matches!(&self.kind, MethodKind::Associated)
+        // When calling an associated method of an interface,
+        // the interface has no knowledge of what impl to use.
+        //
+        // Thus, `tag` is required as a quasi-receiver.
+        //
+        // These `receiver-like` variables are called determinants
+        // in dispatch code.
+        matches!(target, CallTarget::Interface) && matches!(self.kind(), MethodKind::Associated)
     }
 
-    pub fn input_shape(&self, target: CallTarget) -> TokenStream {
-        if !matches!(target, CallTarget::Interface) {
-            panic!()
-        }
+    // TODO: better clarify in code that receiver / tag are mutually exclusive
 
-        let shape = &self
-            .sig
-            .inputs
-            .iter()
-            .filter(|x| !matches!(x, FnArg::Receiver(_)))
-            .collect::<Vec<_>>();
-
-        quote! { #(#shape),* }
-    }
-
-    pub fn args(&self, target: CallTarget) -> TokenStream {
+    fn arguments(&self, target: &CallTarget) -> TokenStream {
+        let receiver = &self.receiver;
+        let tag = self.requires_tag(target).then_some(quote! {tag: Tag});
         let args = &self.args;
-
-        let maybe_tag = self.requires_tag(&target).then_some(quote!(tag,));
-
-        quote! { #maybe_tag #(#args),* }
+        quote! { #receiver #tag #(#args)* }
     }
 
-    pub fn call(&self, target: CallTarget, target_path: &Path) -> TokenStream {
+    fn inputs(&self, target: &CallTarget) -> TokenStream {
+        let tag = self.requires_tag(target).then_some(quote! { tag });
+        let args = self.args.iter().map(|x| x.ident());
+        quote! {#tag #(#args)* }
+    }
+
+    pub fn call(&self, target: CallTarget, via_type: &Path) -> TokenStream {
         let name = if matches!(&self.fn_kind, FnKind::Const) && matches!(&target, CallTarget::Impl)
         {
-            const_redirect(&self.sig.ident)
+            &const_redirect(&self.name)
         } else {
-            self.sig.ident.clone()
+            &self.name
         };
 
-        let args = self.args(target);
+        let inputs = self.inputs(&target);
 
-        let access = match self.kind {
+        let access = match self.kind() {
             MethodKind::Associated => quote! { :: },
             MethodKind::Stateful => quote! { . },
         };
@@ -172,15 +206,30 @@ impl Method {
         let maybe_await =
             matches!(&self.fn_kind, FnKind::Async { .. }).then_some(quote! { .await });
 
-        quote! { #target_path #access #name( #args ) #maybe_await }
+        quote! { #via_type #access #name( #inputs ) #maybe_await }
     }
 
     pub fn call_via_self(&self, target: CallTarget) -> TokenStream {
-        let target_path = match &self.kind {
+        let target_path = match &self.kind() {
             MethodKind::Associated => parse_quote!(Self),
             MethodKind::Stateful => parse_quote!(self),
         };
 
         self.call(target, &target_path)
+    }
+
+    // Emitted signature does not include `vis`
+    pub fn signature(&self, target: &CallTarget) -> TokenStream {
+        let modifier = match self.fn_kind {
+            FnKind::Async { .. } => Some(quote! { async }),
+            FnKind::Const => Some(quote! { const }),
+            FnKind::Regular => None,
+        };
+
+        let name = &self.name;
+        let args = self.arguments(target);
+        let ret = &self.ret;
+
+        quote! { #modifier fn #name( #args ) -> #ret }
     }
 }
