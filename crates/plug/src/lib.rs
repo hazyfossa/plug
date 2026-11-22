@@ -18,8 +18,6 @@ pub trait InterfaceDescriptor {
     type Object;
     type Tag: BorrowedData<'static> + PartialEq + Copy;
     const ALL: &[Self::Tag];
-
-    async fn load(cfg: &Self::Config, tag: Self::Tag) -> eyre::Result<Self::Object>;
 }
 
 pub trait Object {

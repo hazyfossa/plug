@@ -189,10 +189,6 @@ impl InterfaceShape {
                 type Object = Object;
                 type Tag = Tag;
                 const ALL: &[Self::Tag] = ALL;
-
-                async fn load(cfg: &Config, tag: Tag) -> eyre::Result<Object> {
-                    todo!()
-                }
             }
 
             impl Object {

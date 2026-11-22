@@ -99,7 +99,7 @@ impl Codegen for ClientBuilder {
         let ret = &method.ret;
 
         quote! {
-            pub async fn #name(&mut self, #args) -> ::plug::__codegen::eyre::Result<#ret> {
+            pub async fn #name(&mut self, #args) -> eyre::Result<#ret> {
                 // TODO: add context here that error comes from caller
                 let ret = self.raw().call(Request::#name { #inputs }).await?;
                 match ret {
@@ -174,6 +174,7 @@ pub fn remote_codegen(methods: &[Method], scope_name: Ident, object: Ident) -> R
         mod #scope_name {
             use super::*;
             use ::plug::remote::*;
+            use ::plug::__codegen::*;
 
             pub struct Client<C>(C);
 

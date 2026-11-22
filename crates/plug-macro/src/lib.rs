@@ -5,7 +5,6 @@
 // [ ] (try to) rewrite attr parsing
 // [ ] tag runtime parsing
 // [ ] resolve `cfg` attrs
-// [ ] Implement Init for Object
 // [ ] Reuse codegen infra for dispatch
 
 use proc_macro2::TokenStream;
