@@ -99,6 +99,8 @@ impl Method {
 
     pub fn parse(attrs: &mut Vec<Attribute>, sig: &Signature) -> Result<Self> {
         let attrs: MethodAttrs = parse_attrs(attrs)?;
+        let is_final = attrs.is_final;
+
         let name = sig.ident.clone();
 
         let is_const = sig.constness.is_some() || attrs.is_const;
@@ -143,7 +145,7 @@ impl Method {
             ret,
 
             fn_kind,
-            is_final: attrs.is_final,
+            is_final,
         })
     }
 
@@ -172,15 +174,15 @@ impl Method {
     // TODO: better clarify in code that receiver / tag are mutually exclusive
 
     pub fn arguments(&self, target: CallTarget) -> TokenStream {
-        let tag = self.requires_tag(target).then_some(quote! {tag: Tag});
+        let tag = self.requires_tag(target).then_some(quote! { tag: Tag, });
         let args = &self.args;
-        quote! { #tag #(#args)* }
+        quote! { #tag #(#args),* }
     }
 
     pub fn inputs(&self, target: CallTarget) -> TokenStream {
-        let tag = self.requires_tag(target).then_some(quote! { tag });
+        let tag = self.requires_tag(target).then_some(quote! { tag, });
         let args = self.args.iter().map(|x| x.ident());
-        quote! {#tag #(#args)* }
+        quote! {#tag #(#args),* }
     }
 
     pub fn call(&self, target: CallTarget, via_type: &Path) -> TokenStream {

@@ -115,7 +115,10 @@ pub const SERDE_PATH: &str = "::plug::__codegen::serde";
 
 pub fn derive_data() -> TokenStream {
     quote! {
-        #[derive(serde::Serialize, serde::Deserialize)]
+        #[derive(
+            ::plug::__codegen::serde::Serialize,
+            ::plug::__codegen::serde::Deserialize
+        )]
         #[serde(crate = #SERDE_PATH)]
     }
 }
