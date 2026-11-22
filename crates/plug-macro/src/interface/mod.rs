@@ -72,7 +72,6 @@ impl InterfaceShape {
 
         input.vis = parse_quote!(pub);
         input.ident = format_ident!("Interface");
-        input.supertraits.push(parse_quote!(::plug::Init));
 
         let mut mask = Vec::new();
 

@@ -1,10 +1,8 @@
 use plug::plug;
 
 #[plug(implement::TestImpl)]
-#[plug(remote)]
-#[plug(tag_repr = u32)]
 trait Test {
-    fn associated() -> String;
+    fn constructor() -> Self;
     async fn foo(&self) -> bool;
     const fn bar(&self) -> u8;
 }
@@ -19,10 +17,10 @@ mod implement {
         b: String,
     }
 
-    #[plug(0)]
+    #[plug]
     impl Test::Interface for TestImpl {
-        fn associated() -> String {
-            "Hello, world".to_string()
+        fn constructor() -> Test::Object {
+            Self {}.into()
         }
 
         async fn foo(&self) -> bool {
@@ -37,11 +35,14 @@ mod implement {
 }
 
 #[allow(unused)]
-fn do_something(x: Test::Object) {
-    let a = x.bar();
+async fn do_something() {
+    let user_input = "TestImpl";
+    let tag = Test::Tag::parse(user_input).expect("Provided invalid tag");
 
-    use plug::Tagged;
-    let b = Test::Object::associated(implement::TestImpl::TAG);
+    let x = Test::Object::constructor(tag);
+
+    let a = x.bar();
+    let b = x.foo().await;
 }
 
 fn main() {}

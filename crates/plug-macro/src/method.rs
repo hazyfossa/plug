@@ -3,7 +3,9 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{
     Attribute, FnArg, Ident, Pat, PatIdent, PatType, Path, Receiver, Result, ReturnType, Signature,
-    TraitItemFn, Type, parse_quote, spanned::Spanned,
+    TraitItemFn, Type, parse_quote,
+    spanned::Spanned,
+    visit_mut::{self, VisitMut},
 };
 
 use crate::{TokenDef, bail, interface::const_redirect, parse::parse_attrs};
@@ -80,6 +82,10 @@ impl Method {
     pub fn from_trait(item: &mut TraitItemFn) -> Result<Self> {
         let attrs = &mut item.attrs;
         let sig = &mut item.sig;
+
+        if let ReturnType::Type(_, ret) = &mut sig.output {
+            bind_self(ret, parse_quote!(Object));
+        }
 
         let method = Self::parse(attrs, sig)?;
 
@@ -171,8 +177,6 @@ impl Method {
         matches!(target, CallTarget::Interface) && matches!(self.kind(), MethodKind::Associated)
     }
 
-    // TODO: better clarify in code that receiver / tag are mutually exclusive
-
     pub fn arguments(&self, target: CallTarget) -> TokenStream {
         let tag = self.requires_tag(target).then_some(quote! { tag: Tag, });
         let args = &self.args;
@@ -182,7 +186,7 @@ impl Method {
     pub fn inputs(&self, target: CallTarget) -> TokenStream {
         let tag = self.requires_tag(target).then_some(quote! { tag, });
         let args = self.args.iter().map(|x| x.ident());
-        quote! {#tag #(#args),* }
+        quote! { #tag #(#args),* }
     }
 
     pub fn call(&self, target: CallTarget, via_type: &Path) -> TokenStream {
@@ -228,5 +232,33 @@ impl Method {
         let ret = &self.ret;
 
         quote! { #modifier fn #name( #receiver #args ) -> #ret }
+    }
+}
+
+fn bind_self(ty: &mut Type, to: Type) {
+    BindSelfVisitor { target: to }.visit_type_mut(ty);
+}
+
+struct BindSelfVisitor {
+    target: Type,
+}
+
+impl visit_mut::VisitMut for BindSelfVisitor {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        // If this type is exactly `Self`, replace it.
+        if let Type::Path(type_path) = ty {
+            if type_path.qself.is_none()
+                && type_path.path.segments.len() == 1
+                && type_path.path.segments[0].ident == "Self"
+                && type_path.path.segments[0].arguments.is_none()
+            {
+                *ty = self.target.clone();
+                return;
+            }
+        }
+
+        // Otherwise recurse into nested types:
+        // Option<Self>, Result<Self, E>, Vec<(Self, Self)>, etc.
+        visit_mut::visit_type_mut(self, ty);
     }
 }

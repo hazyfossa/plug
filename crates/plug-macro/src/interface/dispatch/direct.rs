@@ -85,6 +85,14 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
         pub enum Object { #(
             #variants(#paths),
         )*}
+
+        #(
+            impl From<#paths> for Object {
+                fn from(value: #paths) -> Self {
+                    Self::#variants(value)
+                }
+            }
+        )*
     };
 
     // Product: (Methods x Impls)

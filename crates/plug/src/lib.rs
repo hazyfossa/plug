@@ -26,11 +26,6 @@ pub trait Object {
     type Config: Data;
 }
 
-// TODO: properly split initialization (memory gather) and construction (memory map: cfg -> state)
-pub trait Init: Object + Sized {
-    async fn init(config: &Self::Config) -> eyre::Result<Self>;
-}
-
 pub trait Tagged<I: InterfaceDescriptor> {
     const TAG: I::Tag;
 }

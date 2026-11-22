@@ -57,16 +57,6 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
     let name = input.ident;
     let config_ident = format_ident!("{name}Config");
 
-    let maybe_empty_init = state.is_empty().then_some(quote! {
-        #[automatically_derived]
-        impl ::plug::Init for #name {
-            fn init(_: &Self::Config) -> impl Future<Output = ::plug::__codegen::eyre::Result<Self>> {
-                let instance = #name {};
-                core::future::ready((Ok(instance)))
-            }
-        }
-    });
-
     let derive_data = derive_data();
 
     let content = quote! {
@@ -101,8 +91,6 @@ pub fn struct_to_object(attrs: TokenStream, input: ItemStruct) -> Result<TokenSt
         impl ::plug::Object for #name {
             type Config = #config_ident;
         }
-
-        #maybe_empty_init
     };
 
     Ok(content)
