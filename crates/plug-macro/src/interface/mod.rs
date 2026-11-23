@@ -154,10 +154,7 @@ impl InterfaceShape {
 
         let derive_data = derive_data();
 
-        let DispatchCode {
-            dispatched_methods,
-            codegen,
-        } = dispatch::dispatch(self)?;
+        let DispatchCode { codegen } = dispatch::dispatch(self)?;
 
         let content = quote! {
             #codegen // ALL, Config, Object
@@ -193,7 +190,6 @@ impl InterfaceShape {
 
             impl Object {
                 #(#final_methods)*
-                #(#dispatched_methods)*
             }
         };
 

@@ -72,10 +72,16 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
     let variants: Vec<_> = impls.iter().map(|x| &x.variant).collect();
     let tags: Vec<_> = impls.iter().map(|x| x.tag()).collect();
 
+    // Product: (Methods x Impls)
+    let dispatched_methods = methods
+        .iter()
+        .filter(|m| m.requires_dispatch())
+        .map(|m| dispatch_one_method(&impls, m));
+
     let derive_data = derive_data();
 
     let codegen = quote! {
-        const ALL: &[Tag] = &[#(#tags,)*];
+        pub const ALL: &[Tag] = &[#(#tags,)*];
 
         #derive_data
         pub struct Config {
@@ -86,6 +92,10 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
             #variants(#paths),
         )*}
 
+        impl Object {
+            #(#dispatched_methods)*
+        }
+
         #(
             impl From<#paths> for Object {
                 fn from(value: #paths) -> Self {
@@ -95,17 +105,7 @@ fn dispatch_all_methods(impls: Vec<ImplRef>, methods: Vec<Method>) -> Result<Dis
         )*
     };
 
-    // Product: (Methods x Impls)
-    let dispatched_methods = methods
-        .iter()
-        .filter(|m| m.requires_dispatch())
-        .map(|m| dispatch_one_method(&impls, m))
-        .collect();
-
-    Ok(DispatchCode {
-        codegen,
-        dispatched_methods,
-    })
+    Ok(DispatchCode { codegen })
 }
 
 fn resolve_impls(shape: &InterfaceShape) -> Option<Vec<ImplRef>> {

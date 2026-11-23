@@ -174,6 +174,9 @@ impl Method {
         //
         // These `receiver-like` variables are called determinants
         // in dispatch code.
+        //
+        // TODO: also consider moving associated methods to
+        // bound methods of `Tag`. Pros: cleaner syntax with `ALL.iter()`
         matches!(target, CallTarget::Interface) && matches!(self.kind(), MethodKind::Associated)
     }
 

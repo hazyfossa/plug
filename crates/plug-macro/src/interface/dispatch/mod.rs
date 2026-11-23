@@ -45,7 +45,6 @@ impl DispatchMode {
 // `Config` - a sum type of all `Object::Config`s
 // `Object` - a product type of all `Object`s
 pub struct DispatchCode {
-    pub dispatched_methods: Vec<TokenStream>,
     pub codegen: TokenStream,
 }
 
@@ -96,7 +95,7 @@ impl Parse for DispatchTarget {
 
 pub fn dispatch(shape: InterfaceShape) -> Result<DispatchCode> {
     match **shape.dispatch_target {
-        DispatchMode::Dynamic => todo!("dyn path"),
+        DispatchMode::Dynamic => dynamic::dispatch(shape),
         DispatchMode::Direct => direct::dispatch(shape),
     }
 }
